@@ -1,62 +1,53 @@
-# Handoff: FunClip-Pro 首次 Git 初始化与简历级重构设计对齐
+# Handoff: SenseVoice ASR FastAPI 微服务解耦与双模 GPU 加速调试
 
 ## Session Metadata
-- Created: 2026-07-04 20:49:29
-- Project: E:\project\funclip-pro
-- Branch: `main` (Git repository initialized)
-- Session duration: 1.0 hours
-
-### Recent Commits (for context)
-- `8075c08` (HEAD -> main) - init: import funclip-pro decoupled codebase (2026-07-04)
-
-## Handoff Chain
-- **Continues from**: [2026-07-03-013326-funclip-pro-decoupling.md](file:///E:/project/funclip-pro/.claude/handoffs/2026-07-03-013326-funclip-pro-decoupling.md)
-- **Supersedes**: None
+- **Created**: 2026-07-05T02:32:00+08:00
+- **Project**: E:\project\funclip-pro
+- **Target User**: 尖子
+- **Branch**: `main` (Git status clean, latest commit: `b7c7c0a`)
 
 ---
 
 ## Current State Summary
+我们完成了 ASR 独立微服务（`asr_service.py`）的设计与双模 TDD 开发，并在本地环境上成功完成了 GPU 加速性能调试：
 
-我们完成了本项目的快速对接，并根据尖子的指示，重点开展了 Git 初始化与简历级工程化改造的痛点头脑风暴。
-
-1. **Git 本地建库完成**：
-   - 优化了项目根目录下的 [.gitignore](file:///E:/project/funclip-pro/.gitignore)，增加了大权重模型软链目录 `model/`、音频录音目录 `recordings/` 以及临时的任务文本文件，确保提交轻量化。
-   - 在项目根目录执行了 `git init`，添加并完成了首次规范化提交（Commit ID: `8075c08`），分支命名为 `main`。
-2. **简历级痛点分析与共识对齐**：
-   - 确定了 Demo 距离生产级项目的硬伤所在：
-     - **进程管理粗糙**：离线和实时转写深度绑定 Windows 批处理和 `cmd.exe /c` 黑框弹窗，无法跨平台且无法监控子进程生命周期。
-     - **可观测性缺失**：Gradio 界面无法获取后台 ASR 的具体进度百分比和吞吐指标。
-     - **代码拷贝冗余**：通过 CodeGraph 读图探索，发现 `app_live_local.py` 与 `app_live_ws.py` 均直接硬编码复制了完全一样的 Tkinter `SubtitleOverlay` 字幕悬浮窗类，违反 DRY 工程原则。
-   - 确立了重构路线：优先进行**【第一阶段：核心解耦与多进程异步管道架构（消除弹窗与 UI 冗余）】**。
-
----
-
-## Codebase Understanding
-
-### Critical Files
-- [app_control.py](file:///E:/project/funclip-pro/app_control.py)：WebUI 总入口，当前使用 `subprocess.Popen` 调用 cmd.exe 和 bat 脚本。
-- [app_live_local.py](file:///E:/project/funclip-pro/app_live_local.py) & [app_live_ws.py](file:///E:/project/funclip-pro/app_live_ws.py)：本地实时和 WS 实时听写客户端，均硬编码了各自的 `SubtitleOverlay`。
-- [core/](file:///E:/project/funclip-pro/core)：底层逻辑库，未来将封装统一的 `core/ui/overlay.py` 和 ASR 接口。
-- [implementation_plan.md](file:///C:/Users/song/.gemini/antigravity/brain/306f4782-de9b-452f-97a7-418549f2f1aa/implementation_plan.md)：保存在 AI 脑区的重构路线图，详细记录了各阶段重构子任务。
+1.  **FastAPI 微服务解耦**：
+    - 新增了 [asr_service.py](file:///E:/project/funclip-pro/asr_service.py)。它不破坏项目原有的 Gradio 运行逻辑，单独启动并监听本地 `8001` 端口，提供 `/transcribe` 转写服务。
+    - 引入了 `asyncio.to_thread` 调度 PyTorch GPU，避免了重型推理卡死主事件循环；并采用 `asyncio.Semaphore(3)` 限制最大并发推理数以防范 CUDA OOM。
+    - 所有临时文件的写入和清理逻辑全置于 `try...finally` 中，消除了异常分支下的磁盘泄漏隐患。
+2.  **GPU 驱动与依赖故障根治**：
+    - 成功排查并解决了 pip 自动下载国内镜像源 CPU 伪高版本（`torch-2.12.1`）导致的 API 静默回滚至 CPU 慢速运行的 Bug。
+    - 解决了 NumPy 2.x 与 PyTorch 1.x 之间破坏性升级导致的 C-API 二进制不兼容冲突（降级安装为 `numpy<2`，目前稳定在 `1.26.4`）。
+    - 目前 GPU 推理已完全被点亮，转写速度从 184 秒缩减至 4.1 秒（提速 44 倍），RTF 实时率达到 GPU 级别的 0.01~0.05。
+3.  **双模 API 管道设计**：
+    - 接口支持 Form 参数 `vad_split: bool`。
+    - **`vad_split=false`** (极速单句模式)：适合 Dify 聊天机器人提问场景，跳过 VAD，几百毫秒秒回。
+    - **`vad_split=true`** (VAD 切句分段模式)：适合 Dify 知识库索引建库场景。调用本地 VAD 模型切句，输出以 `\n` 分段的结构化文本，大幅提升了 RAG 句子分界质量和 ASR 长文识别精度。
 
 ---
 
-## Decisions Made
+## Pending Work
 
-- **安全过滤 Git**：在初始化 Git 前，将物理软链 `model/` 写入了 `.gitignore`，避免了添加数十 GB 模型的事故。
-- **重构架构设计**：保留 Gradio 作为操作界面，在代码底层引入 `JobRunner`（多线程/多进程管道）和 `Queue` 回调，将外部批处理和 cmd 黑框全部重构在 Python 进程内完成。此改造方案经对齐后，能为简历提供强有力的**“可观测性设计”**与**“跨平台多进程异步 IPC 控制”**两大硬核闪光点。
+### Immediate Next Steps (新会话第一步)
+尖子计划明天在本地的 **Dify** 中实际配置和接入该 ASR 微服务。接管的 Agent 应该配合执行以下步骤：
+1.  **启动 API 中台服务**：
+    在 `asr_ui_env` 激活状态下，启动：`python asr_service.py`。
+2.  **在 Dify 中创建两个不同的应用/流程图**：
+    - **对话应用**：拖入 HTTP 节点，URL 指向 `http://127.0.0.1:8001/transcribe`，Form 参数 `vad_split` 设为 `false`。
+    - **建库流水线应用**：HTTP 节点的 `vad_split` 设为 `true`，用于对管理员上传的长音视频切句分割。
+3.  **调试联调**：
+    如果在 Docker 容器内部调用宿主机的 API 端口，可能需要替换 `127.0.0.1` 为局域网 IP（如 `192.168.x.x`）或 Docker 网桥 IP（`host.docker.internal`），协助尖子调试连通性。
 
 ---
 
-## Pending Work & Immediate Next Steps
+## Context for Resuming Agent (Gotchas & Environment)
 
-在下一个会话中，新接管的 AI 代理需要从以下步骤开始：
-
-1. **第一步：消灭 UI 重复代码，抽取 overlay 模块**：
-   - 提取 `app_live_local.py` 和 `app_live_ws.py` 中的 `SubtitleOverlay` 代码。
-   - 在 `core/` 下新建 `core/ui/overlay.py`，并将此类迁移进去，使两端通过标准的模块导入（`from core.ui.overlay import SubtitleOverlay`）复用 UI，消除冗余拷贝。
-2. **第二步：封装离线 ASR 驱动，去除黑框与临时 txt**：
-   - 重构 `funclip/asr1.py` 为通用的 `ASROfflineEngine`。
-   - 在 `app_control.py` 内部使用多线程/协程后台 Worker 执行转写，淘汰 `temp_task_list.txt`，并通过管道/队列捕获 stdout 进度，通过 `gr.Progress()` 将转写进度实时回传渲染到 WebUI。
-3. **第三步：将启动脚本统一为 Python 入口**：
-   - 将现有 Windows 的 bat 脚本重构为跨平台的 `run.py` 或进程启动类，实现 Windows/Linux 自适应环境唤醒。
+### 🛠️ 环境状态
+- **操作系统**：Windows 11
+- **推荐 Python 虚拟环境**：`asr_ui_env`（物理路径 `E:\conda\envs\asr_ui_env`）。
+- **已安装测试依赖**：在 `asr_ui_env` 中已经部署了 `pytest` 和 `httpx`，接管的 Agent 可在项目根目录下通过运行：
+  `& "E:\conda\envs\asr_ui_env\python.exe" -m pytest tests/test_asr_api.py -v`
+  一键通过所有的 Mock 单元测试和本地 CUDA 硬件集成测试（2 Passed）。
+- **模型本地路径**：
+  - ASR (SenseVoiceSmall): `E:\project\funclip-pro\model\models\iic\SenseVoiceSmall`
+  - VAD (FSMN-VAD): `E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch`
