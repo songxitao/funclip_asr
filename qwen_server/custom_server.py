@@ -1,0 +1,474 @@
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from typing import List, Optional, Union, Dict, Any
+import torch
+import os
+import base64
+import numpy as np
+import io
+import asyncio
+import time
+import json
+
+# Import Qwen3-ASR components
+from qwen_asr.inference.qwen3_asr import Qwen3ASRModel
+
+app = FastAPI()
+
+# Global Model Instance
+asr_model = None
+
+# Configuration
+ASR_MODEL_PATH = "/data/shared/Qwen3-ASR-1.7B"
+ALIGNER_MODEL_PATH = "/data/shared/Qwen3-ForcedAligner-0.6B"
+GPU_MEMORY_UTILIZATION = 0.8
+MAX_MODEL_LEN = 2048  # 🔥 配合前端 20s/150字 重置阈值，2048 足够
+
+class AudioRequest(BaseModel):
+    audio_base64: str
+    language: Optional[str] = None
+    return_timestamps: bool = False
+
+class BatchAudioRequest(BaseModel):
+    audio_batch_base64: Optional[List[str]] = None
+    audio_paths: Optional[List[str]] = None
+    language: Optional[str] = None
+    return_timestamps: bool = False
+
+# Language Code Mapping
+QWEN3_LANG_MAP = {
+    "zh": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "yue": "Cantonese",
+    "ar": "Arabic",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ru": "Russian",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "tr": "Turkish",
+    "hi": "Hindi",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "sv": "Swedish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "pl": "Polish",
+    "cs": "Czech",
+    "fil": "Filipino",
+    "fa": "Persian",
+    "el": "Greek",
+    "hu": "Hungarian",
+    "mk": "Macedonian",
+    "ro": "Romanian",
+    "auto": None
+}
+
+@app.on_event("startup")
+def load_model():
+    global asr_model
+    print("🚀 Loading Qwen3-ASR Model with vLLM backend...")
+    try:
+        asr_model = Qwen3ASRModel.LLM(
+            model=ASR_MODEL_PATH,
+            forced_aligner=ALIGNER_MODEL_PATH,
+            forced_aligner_kwargs={
+                "device_map": "cuda:0", 
+                "dtype": torch.bfloat16
+            },
+            gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
+            max_model_len=MAX_MODEL_LEN,
+            max_num_seqs=32,               # 限制并发序列数，释放管理显存
+            max_inference_batch_size=32,    # 提升单次并行计算量，匹配前端并发
+            max_new_tokens=512,            # 🔥 修复丢字幕：32太小，长片段会被截断
+            kv_cache_dtype="fp8",
+            # 🔥 满血性能参数
+            enable_prefix_caching=True,    # 开启前缀缓存，消灭重叠计算
+            enable_chunked_prefill=True    # 开启分块预填，防止心跳超时
+        )
+        print("✅ Model Loaded Successfully!")
+    except Exception as e:
+        print(f"❌ Failed to load model: {e}")
+        raise e
+
+# --- WebSocket Streaming ---
+@app.websocket("/ws/asr")
+async def websocket_endpoint(websocket: WebSocket, language: str = None):
+    global asr_model
+    await websocket.accept()
+    print(f"📡 WebSocket connected (Language: {language})")
+    
+    state = None
+    # 🔥 内部消息队列：解耦 WebSocket 收包与推理处理
+    msg_queue = asyncio.Queue()
+    
+    async def ws_reader():
+        """持续读取 WebSocket 消息，放入内部队列"""
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    await msg_queue.put(None)  # 哨兵：连接已断开
+                    break
+                await msg_queue.put(msg)
+        except Exception:
+            await msg_queue.put(None)
+    
+    reader_task = asyncio.create_task(ws_reader())
+    
+    try:
+        # Map ISO code to Qwen3 canonical name
+        input_lang = str(language).lower() if language else "auto"
+        qwen_lang = QWEN3_LANG_MAP.get(input_lang, None)
+        if not qwen_lang and language and language[0].isupper():
+            qwen_lang = language
+            
+        state_kwargs = {
+            "language": qwen_lang,
+            "unfixed_chunk_num": 1,
+            "unfixed_token_num": 3,
+            "chunk_size_sec": 0.5
+        }
+        state = asr_model.init_streaming_state(**state_kwargs)
+        
+        while True:
+            # 等待至少一条消息
+            message = await msg_queue.get()
+            if message is None:
+                break  # 连接断开
+                
+            if "bytes" in message:
+                data = message["bytes"]
+                if not data: break
+                
+                audio_parts = [np.frombuffer(data, dtype=np.float32)]
+                got_reset = False
+                
+                # 🔥 积压合并：把队列里已排队的音频全部拿出来，合并后一次推理
+                while not msg_queue.empty():
+                    try:
+                        extra = msg_queue.get_nowait()
+                        if extra is None:
+                            break
+                        if "bytes" in extra:
+                            extra_data = extra["bytes"]
+                            if extra_data:
+                                audio_parts.append(np.frombuffer(extra_data, dtype=np.float32))
+                        elif "text" in extra:
+                            # 队列中遇到 reset 指令：丢弃已积压的音频，立即执行重置
+                            try:
+                                cmd_data = json.loads(extra["text"])
+                                if cmd_data.get("command") == "reset":
+                                    target_lang = cmd_data.get("language")
+                                    if target_lang:
+                                        state_kwargs["language"] = target_lang
+                                        print(f"♻️ Resetting state (Lock: {target_lang})")
+                                    else:
+                                        print("♻️ Resetting state (Auto)")
+                                    state = asr_model.init_streaming_state(**state_kwargs)
+                                    await websocket.send_json({"status": "reset_ok"})
+                                    audio_parts = []  # 丢弃重置前的积压音频
+                                    got_reset = True
+                                    break
+                            except Exception as e:
+                                print(f"⚠️ Cmd Error: {e}")
+                    except asyncio.QueueEmpty:
+                        break
+                
+                if got_reset or not audio_parts:
+                    continue
+                
+                # 合并音频并推理
+                merged_audio = np.concatenate(audio_parts)
+                merged_count = len(audio_parts)
+                chunk_duration = len(merged_audio) / 16000
+                
+                if merged_count > 1:
+                    print(f"⚡ Merged {merged_count} chunks ({chunk_duration:.1f}s)")
+                
+                start_time = time.time()
+                asr_model.streaming_transcribe(merged_audio, state)
+                duration = time.time() - start_time
+                
+                if state.text:
+                    if duration > chunk_duration:
+                        print(f"🐢 Slow Inference: {duration:.2f}s for {chunk_duration:.1f}s audio (RTF: {duration/chunk_duration:.2f})")
+                        
+                    await websocket.send_json({
+                        "text": state.text,
+                        "language": state.language,
+                        "is_final": False,
+                        "latency": duration
+                    })
+                    
+            elif "text" in message:
+                try:
+                    cmd_data = json.loads(message["text"])
+                    if cmd_data.get("command") == "reset":
+                        target_lang = cmd_data.get("language")
+                        if target_lang:
+                            state_kwargs["language"] = target_lang
+                            print(f"♻️ Resetting state (Lock: {target_lang})")
+                        else:
+                            print("♻️ Resetting state (Auto)")
+                            
+                        state = asr_model.init_streaming_state(**state_kwargs)
+                        await websocket.send_json({"status": "reset_ok"})
+                except Exception as e:
+                    print(f"⚠️ Cmd Error: {e}")
+                
+    except WebSocketDisconnect:
+        print("🔌 WebSocket disconnected")
+    except Exception as e:
+        print(f"❌ Streaming Error: {e}")
+    finally:
+        reader_task.cancel()
+        if state:
+            try: asr_model.finish_streaming_transcribe(state)
+            except: pass
+        try: await websocket.close()
+        except: pass
+        print("🏁 Session finished")
+
+@app.post("/v1/audio/batch_transcriptions")
+async def transcribe_batch(req: BatchAudioRequest):
+    """
+    Batch endpoint for high-throughput inference using vLLM batching.
+    Supports both Base64 (legacy) and Direct Path (Shared Volume).
+    """
+    global asr_model
+    try:
+        import tempfile
+        import uuid
+        import concurrent.futures
+        
+        temp_files = []
+        is_direct_path = False
+        
+        if req.audio_paths and len(req.audio_paths) > 0:
+            # 🚀 极速模式：直接读取共享目录的文件
+            print(f"📂 Received Direct Path Request: {len(req.audio_paths)} files")
+            # 验证这些路径在 Docker 里是否存在
+            valid_paths = []
+            for p in req.audio_paths:
+                if os.path.exists(p):
+                    valid_paths.append(p)
+                else:
+                    print(f"⚠️ Warning: Docker path not found: {p}")
+            temp_files = valid_paths
+            is_direct_path = True
+            
+        elif req.audio_batch_base64 and len(req.audio_batch_base64) > 0:
+            # 🐢 兼容模式：Base64 解码
+            # Helper function for parallel writing
+            def save_temp_file(b64_data):
+                try:
+                    audio_bytes = base64.b64decode(b64_data)
+                    t_path = f"/tmp/batch_{uuid.uuid4()}.wav"
+                    with open(t_path, "wb") as f:
+                        f.write(audio_bytes)
+                    return t_path
+                except Exception as e:
+                    print(f"❌ Save file failed: {e}")
+                    return None
+    
+            try:
+                # 1. Decode and Save all files (Parallel I/O)
+                # Using ThreadPool to maximize I/O throughput
+                print(f"📥 Received Base64 Request: {len(req.audio_batch_base64)} files")
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, len(req.audio_batch_base64))) as executor:
+                    # Submit all tasks
+                    futures = [executor.submit(save_temp_file, b64) for b64 in req.audio_batch_base64]
+                    # Collect results
+                    for f in concurrent.futures.as_completed(futures):
+                        path = f.result()
+                        if path: temp_files.append(path)
+            except Exception as e:
+                print(f"❌ Base64 Decode Failed: {e}")
+        else:
+            raise HTTPException(status_code=400, detail="Either audio_batch_base64 or audio_paths must be provided")
+
+        if not temp_files:
+             raise HTTPException(status_code=400, detail="No valid audio files to process")
+
+        try:
+            # 2. Batch Inference
+            # vLLM handles the parallelism internally
+            print(f"🚀 Running Batch Inference on {len(temp_files)} files...")
+            print(f"🔍 [Server Debug] Processing with language='{req.language}'") # 🔥 Debug Log
+            results = asr_model.transcribe(
+                audio=temp_files,
+                language=req.language,
+                return_time_stamps=req.return_timestamps
+            )
+            
+            # 3. Format Response
+            response_list = []
+            for res in results:
+                item = {
+                    "text": res.text,
+                    "language": res.language
+                }
+                if req.return_timestamps and hasattr(res, 'time_stamps') and res.time_stamps:
+                     timestamps = []
+                     for t in res.time_stamps.items:
+                         timestamps.append({
+                             "text": t.text,
+                             "start": t.start_time,
+                             "end": t.end_time
+                         })
+                     item["timestamps"] = timestamps
+                response_list.append(item)
+            
+            print(f"✅ Batch Completed.")
+            return {"results": response_list}
+
+        finally:
+            # Cleanup only if we created temp files (legacy mode)
+            if not is_direct_path:
+                for p in temp_files:
+                    if os.path.exists(p):
+                        try: os.remove(p)
+                        except: pass
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    """
+    Simulate OpenAI Chat Completion API but for ASR.
+    Accepts standard OpenAI format, extracts audio, and returns transcription.
+    """
+    try:
+        data = await request.json()
+        messages = data.get("messages", [])
+        
+        # Extract audio from the last user message
+        audio_url = None
+        for msg in messages:
+            if msg['role'] == 'user':
+                if isinstance(msg['content'], list):
+                    for item in msg['content']:
+                        if item['type'] == 'audio_url':
+                            audio_url = item['audio_url']['url']
+        
+        if not audio_url:
+             return {"error": "No audio_url found in messages"}
+
+        # Handle data:audio/wav;base64,.... format
+        if audio_url.startswith("data:"):
+            header, encoded = audio_url.split(",", 1)
+            audio_bytes = base64.b64decode(encoded)
+        else:
+            # Handle regular URL (not implemented in this simple server, but structure is here)
+             return {"error": "Only base64 data URLs are supported in this demo server"}
+        
+        # Determine language and timestamps request from "content" text or custom fields?
+        # For simplicity, we just infer based on defaults or look for special markers if needed.
+        # But wait, the client script sends standard chat format.
+        # Let's keep it simple: Transcribe!
+        
+        # Need to save temp file or pass bytes? Qwen3 'transcribe' accepts bytes via specific loading?
+        # Qwen3 'normalize_audios' handles local path / URL / base64 string directly!
+        # So we can just pass the `audio_url` string directly if it's a data URL!
+        
+        res = asr_model.transcribe(
+            audio=audio_url,
+            return_time_stamps=False # Standard Chat API doesn't support timestamps format usually
+        )
+        text_out = res[0].text
+        lang_out = res[0].language
+
+        return {
+            "id": "chatcmpl-custom",
+            "object": "chat.completion",
+            "created": 0,
+            "model": ASR_MODEL_PATH,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": f"language {lang_out}<asr_text>{text_out}" 
+                },
+                "finish_reason": "stop"
+            }]
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+@app.post("/v1/audio/transcriptions")
+async def transcribe_audio(req: AudioRequest):
+    """
+    Custom endpoint for Full ASR capabilities including Timestamps.
+    """
+    global asr_model
+    global asr_model
+    try:
+        # Decode base64
+        audio_bytes = base64.b64decode(req.audio_base64)
+        
+        # Save to temp file to ensure soundfile can read it (avoids BytesIO issues)
+        import tempfile
+        import uuid
+        
+        temp_filename = f"/tmp/audio_{uuid.uuid4()}.wav"
+        with open(temp_filename, "wb") as f:
+            f.write(audio_bytes)
+            
+        try:
+            results = asr_model.transcribe(
+                audio=temp_filename,
+                language=req.language,
+                return_time_stamps=req.return_timestamps
+            )
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        
+        res = results[0]
+        
+        response = {
+            "text": res.text,
+            "language": res.language,
+        }
+        
+        # 🔥 Log result to console for user verification
+        print(f"\n[RESULT] Language: {res.language}")
+        print(f"[RESULT] Text: {res.text[:100]}..." if len(res.text) > 100 else f"[RESULT] Text: {res.text}")
+        print("-" * 50)
+        
+        if req.return_timestamps and res.time_stamps:
+            # Convert forced aligner result to list of dicts
+            timestamps = []
+            for item in res.time_stamps.items:
+                timestamps.append({
+                    "text": item.text,
+                    "start": item.start_time,
+                    "end": item.end_time
+                })
+            response["timestamps"] = timestamps
+            
+        return response
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=80)

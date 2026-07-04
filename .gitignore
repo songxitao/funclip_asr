@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Custom Configs
+config.json
+ONBOARDING_MEMO.md
+
+# Project outputs & temp files
+output/
+ocr_output/
+*.log
+.codegraph/
+.pytest_cache/
+model/
+recordings/
+temp_task_list.txt
+temp_task_list_offline.txt
+qwen_server/output/
