@@ -63,6 +63,13 @@ class SenseVoiceSmall(SenseVoiceSmallONNX):
         with open(tokens_path, "r", encoding="utf-8") as f:
             self.tokens = json.load(f)
 
+    def load_data(self, wav_content, fs=None):
+        import numpy as np
+        import librosa
+        if isinstance(wav_content, list):
+            return [item if isinstance(item, np.ndarray) else librosa.load(item, sr=fs)[0] for item in wav_content]
+        return super().load_data(wav_content, fs)
+
     def __call__(self, wav_content, language=[0], textnorm=[15], tokenizer=None, **kwargs):
         if tokenizer is None:
             # 内部默认 Tokenizer
@@ -73,7 +80,6 @@ class SenseVoiceSmall(SenseVoiceSmallONNX):
                     res = []
                     for i in ids:
                         t = self.tokens[i]
-                        # 过滤掉特殊 tag 像 <|zh|> <|happy|> 等
                         if t.startswith("<|") and t.endswith("|>"):
                             continue
                         if t == "<space>":
@@ -84,7 +90,51 @@ class SenseVoiceSmall(SenseVoiceSmallONNX):
                             res.append(t)
                     return "".join(res)
             tokenizer = DefaultTokenizer(self.tokens)
-        return super().__call__(wav_content, language=language, textnorm=textnorm, tokenizer=tokenizer, **kwargs)
+
+        # 核心代码：重写底层以支持 batch_size > 1 时的遍历解码
+        import numpy as np
+        waveform_list = self.load_data(wav_content, self.frontend.opts.frame_opts.samp_freq)
+        waveform_nums = len(waveform_list)
+        asr_res = []
+        
+        for beg_idx in range(0, waveform_nums, self.batch_size):
+            end_idx = min(waveform_nums, beg_idx + self.batch_size)
+            feats, feats_len = self.extract_feat(waveform_list[beg_idx:end_idx])
+            
+            cur_batch_size = end_idx - beg_idx
+            cur_language = language * cur_batch_size if len(language) == 1 else language
+            cur_textnorm = textnorm * cur_batch_size if len(textnorm) == 1 else textnorm
+            
+            if len(cur_language) < cur_batch_size:
+                cur_language = cur_language + [cur_language[-1]] * (cur_batch_size - len(cur_language))
+            else:
+                cur_language = cur_language[:cur_batch_size]
+                
+            if len(cur_textnorm) < cur_batch_size:
+                cur_textnorm = cur_textnorm + [cur_textnorm[-1]] * (cur_batch_size - len(cur_textnorm))
+            else:
+                cur_textnorm = cur_textnorm[:cur_batch_size]
+
+            ctc_logits, encoder_out_lens = self.infer(
+                feats, 
+                feats_len, 
+                np.array(cur_language, dtype=np.int32), 
+                np.array(cur_textnorm, dtype=np.int32)
+            )
+            # 返回 torch.Tensor 便于按维度解析
+            ctc_logits = torch.from_numpy(ctc_logits).float()
+            
+            # 支持多 batch 的结果解析
+            for b in range(end_idx - beg_idx):
+                x = ctc_logits[b, : encoder_out_lens[b].item(), :]
+                yseq = x.argmax(dim=-1)
+                yseq = torch.unique_consecutive(yseq, dim=-1)
+
+                mask = yseq != self.blank_id
+                token_int = yseq[mask].tolist()
+                
+                asr_res.append(tokenizer.tokens2text(token_int))
+        return asr_res
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
