@@ -13,3 +13,4 @@ g4f
 dashscope
 curl_cffi
 funasr-onnx
+onnxruntime-gpu[cuda,cudnn]
