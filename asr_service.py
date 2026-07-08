@@ -173,7 +173,7 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
 async def transcribe(
     request: Request, 
     file: UploadFile = File(...), 
-    vad_split: bool = Form(False)  # 接收 Form 参数决定是否开启 VAD
+    vad_split: bool = Form(True)  # 接收 Form 参数决定是否开启 VAD
 ):
     if MODEL is None or VAD_MODEL is None:
         raise HTTPException(status_code=503, detail="模型未初始化完毕")
