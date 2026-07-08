@@ -57,12 +57,6 @@
 - [ ] 找到 [asr_service.py:107-122](file:///E:/project/funclip-pro/asr_service.py#L107-L122) 的 ASR 推理循环，将其重构。
 - [ ] 在 `finally` 之前，把 VAD 分割后的所有 chunks 收集进列表，一次性喂给原生的 `MODEL.generate(input=chunks, batch_size_s=0, language="auto", use_itn=True)` 进行并发推理：
   ```python
-  # 修改前 (for 循环 30 次单句，频繁读写)：
-  # for start_ms, end_ms in opt_segs:
-  #     ...
-  #     res = MODEL.generate(input=chunk, cache={}, language="auto", use_itn=True)
-  
-  # 修改后 (1次装载GPU -> 1次Batch ASR -> 1次卸载CPU)：
   chunks = []
   for start_ms, end_ms in opt_segs:
       s_idx = int(start_ms * 16)
@@ -73,7 +67,6 @@
       
   if chunks:
       res_batch = MODEL.generate(input=chunks, batch_size_s=0, language="auto", use_itn=True)
-      # 收集并过滤特殊标签
       texts = []
       for r in res_batch:
           raw = r.get('text', '').strip()
@@ -84,12 +77,15 @@
   ```
 
 ### Task 3: 标点模型集成与转写后处理
-- [ ] 在 `asr_service.py` 启动 startup 时，将 `PUNC_MODEL` (CT-Punc 标点模型) 加载在 CPU 6 线程上。
+- [ ] 在 `asr_service.py` 启动 startup时，将 `PUNC_MODEL` (CT-Punc 标点模型) 加载在 CPU 6 线程上。
 - [ ] 在 ASR 大 Batch 推理拿到 `raw_text` 后，调用 `PUNC_MODEL.generate(input=raw_text)` 并提取文本作为最终返回。
 - [ ] 将 API 路由 `/transcribe` 的 `vad_split` 参数的默认值修改为 `Form(True)`。
 
 ### Task 4: 自动化测试与验证
-- [ ] 创建 `tests/test_pytorch_service_integration.py` 接口测试：
-  - 测试开始时用 subprocess 自动在 `8001` 端口拉起 `asr_service.py`；
-  - 使用相同长音频做转写请求，指定 `vad_split=True`；
-  - 验证返回结果文本是否带有标点符号（，。！？），且测试完成后自动杀掉 `8001` 微服务。
+- [ ] 创建 `tests/test_pytorch_service_integration.py` 接口测试，使用 PyTorch-GPU 服务进行 API 转写验证，校验输出文本中是否成功包含标点符号。测试结束时自动退出 8001 微服务后台进程。
+
+### Task 5: 原生 ASR 与 ONNX-GPU ASR 的性能与字错率 (CER) 比对测试
+- [ ] 编写对比测试脚本 `tests/test_asr_comparison.py`，使用相同的音频进行双重跑评：
+  - 同时调用 8001 (优化后的 PyTorch) 和 8002 (优化后的 ONNX) 接口；
+  - 对比各自的端到端耗时，计算 Speedup 加速比；
+  - 自动运行编辑距离算法计算 ONNX 文字与原生文字的字符错误率 (CER/字错吻合度)，以科学呈现量化和模型精度在不同推理后处理下的损耗折损。
