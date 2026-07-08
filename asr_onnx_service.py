@@ -152,26 +152,28 @@ app.add_middleware(
 
 MODEL = None
 VAD_MODEL = None
+PUNC_MODEL = None  # 新增标点模型全局变量
 GPU_SEMAPHORE = asyncio.Semaphore(3)  # 并发限制，防范 CUDA OOM
 MAX_FILE_SIZE = 50 * 1024 * 1024      # 50MB 内存防线
 
 @app.on_event("startup")
 def load_models():
-    global MODEL, VAD_MODEL
+    global MODEL, VAD_MODEL, PUNC_MODEL
     model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall-ONNX"
     vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
+    punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
     
-    logger.info("正在加载 ONNX GPU ASR 模型和 CPU VAD 模型...")
+    logger.info("正在加载 ONNX GPU ASR 模型、CPU VAD 模型和 CPU 标点模型...")
     try:
-        # 1. 加载 ASR 语音识别模型 (ONNX GPU)
+        # 1. 加载 ASR (将 batch_size 修改为 16 以适配大 batch 推理)
         MODEL = SenseVoiceSmall(
             model_dir=model_path,
-            batch_size=1,
+            batch_size=16,
             quantize=True,
             device_id="0",
             intra_op_num_threads=4
         )
-        # 2. 加载 VAD 语音活动检测模型（在 CPU 上加载）
+        # 2. 加载 VAD
         VAD_MODEL = AutoModel(
             model=vad_path,
             trust_remote_code=True,
@@ -179,38 +181,43 @@ def load_models():
             disable_update=True,
             disable_pbar=True
         )
-        # 确保 VAD 在 cpu 上运行
         VAD_MODEL.model.to("cpu")
         VAD_MODEL.kwargs["device"] = "cpu"
         
-        logger.info("ASR (ONNX GPU) 和 VAD (CPU) 模型全部加载成功！")
+        # 3. 加载 PUNC 标点模型
+        PUNC_MODEL = AutoModel(
+            model=punc_path,
+            trust_remote_code=True,
+            device="cpu",
+            disable_update=True,
+            disable_pbar=True
+        )
+        PUNC_MODEL.model.to("cpu")
+        PUNC_MODEL.kwargs["device"] = "cpu"
+        
+        logger.info("所有模型加载成功！")
     except Exception as e:
         logger.error(f"模型加载失败: {e}")
         raise e
 
-def _run_inference(audio_path: str, vad_split: bool = False) -> str:
-    """在独立线程中运行的同步推理逻辑，支持双轨模式"""
+def _run_inference(audio_path: str, vad_split: bool = True) -> str:
+    """在独立线程中运行的同步推理逻辑，默认支持开启 VAD"""
     if not vad_split:
-        # --- 轨道一：极速单句模式 (适合 Dify 语音对话提问) ---
         res = MODEL(audio_path)
         if res and len(res) > 0:
             raw_text = res[0].strip()
-            # 过滤情绪/事件富文本标签
             clean_text = re.sub(r"<\|.*?\|>", "", raw_text).strip()
             return clean_text
         return ""
     else:
-        # --- 轨道二：长音频 VAD 切句模式 (适合 Dify 知识库索引入库) ---
         import librosa
-        
-        # 1. 加载音频波形
         audio, _ = librosa.load(audio_path, sr=16000)
         
-        # 2. 运行 VAD 切分得到静音区间
+        # 1. 运行 VAD 切分
         vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
         raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, len(audio)/16*1000]]
         
-        # 3. 合并小静音切片，保证每段大约 8 秒以内
+        # 2. 合并段
         def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
             if not segments: return []
             merged = []
@@ -228,30 +235,47 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
             
         opt_segs = _merge_vad_segments(raw_segs)
         
-        # 4. 循环切片进行 ASR 识别并过滤标签，用换行拼接提高 RAG 句子分界质量
-        texts = []
+        # 3. 收集所有音频切片，打包准备批量输入
+        chunks = []
         for start_ms, end_ms in opt_segs:
             s_idx = int(start_ms * 16)
             e_idx = int(end_ms * 16)
             chunk = audio[max(0, s_idx-800):min(len(audio), e_idx+800)]
             if len(chunk) < 1600: continue
+            chunks.append(chunk)
             
-            res = MODEL(chunk)
-            if res and len(res) > 0:
-                raw = res[0].strip()
-                clean = re.sub(r"<\|.*?\|>", "", raw).strip()
-                if clean:
-                    texts.append(clean)
-                    
-        return "\n".join(texts)
+        if not chunks:
+            return ""
+            
+        # 一次性调用 ASR 模型并行处理整个批次
+        texts = MODEL(chunks)
+        
+        clean_texts = []
+        for t in texts:
+            clean = re.sub(r"<\|.*?\|>", "", t).strip()
+            if clean:
+                clean_texts.append(clean)
+                
+        raw_text = "\n".join(clean_texts)
+        
+        # 4. 后处理加回标点符号
+        if PUNC_MODEL is not None and raw_text.strip():
+            try:
+                punc_out = PUNC_MODEL.generate(input=raw_text)
+                if punc_out and len(punc_out) > 0:
+                    raw_text = punc_out[0].get('text', raw_text)
+            except Exception as punc_err:
+                logger.error(f"标点符号后处理失败: {punc_err}")
+                
+        return raw_text
 
 @app.post("/transcribe")
 async def transcribe(
     request: Request, 
     file: UploadFile = File(...), 
-    vad_split: bool = Form(False)  # 接收 Form 参数决定是否开启 VAD
+    vad_split: bool = Form(True)  # 接收 Form 参数决定是否开启 VAD
 ):
-    if MODEL is None or VAD_MODEL is None:
+    if MODEL is None or VAD_MODEL is None or PUNC_MODEL is None:
         raise HTTPException(status_code=503, detail="模型未初始化完毕")
         
     # 1. 安全校验：检查文件大小
