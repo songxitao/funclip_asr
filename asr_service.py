@@ -129,22 +129,38 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
                 
             opt_segs = _merge_vad_segments(raw_segs)
             
-            # 4. 循环切片进行 ASR 识别并过滤标签，用换行拼接提高 RAG 句子分界质量
-            texts = []
+            # 4. 切出 chunks = []
+            chunks = []
             for start_ms, end_ms in opt_segs:
                 s_idx = int(start_ms * 16)
                 e_idx = int(end_ms * 16)
                 chunk = audio[max(0, s_idx-800):min(len(audio), e_idx+800)]
                 if len(chunk) < 1600: continue
+                chunks.append(chunk)
                 
-                res = MODEL.generate(input=chunk, cache={}, language="auto", use_itn=True)
-                if res:
-                    raw = res[0].get('text', '').strip()
+            if not chunks:
+                return ""
+                
+            # 5. 一次性传入大 Batch 推理
+            res = MODEL.generate(input=chunks, batch_size_s=0, language="auto", use_itn=True)
+            
+            # 6. 合并文本 raw_text
+            texts = []
+            if res:
+                for item in res:
+                    raw = item.get('text', '').strip()
                     clean = re.sub(r"<\|.*?\|>", "", raw).strip()
                     if clean:
                         texts.append(clean)
-                        
-            return "\n".join(texts)
+            raw_text = "".join(texts)
+            if not raw_text:
+                return ""
+                
+            # 7. 合并文本后在 CPU 侧运行标点模型
+            punc_res = PUNC_MODEL.generate(input=raw_text)
+            if punc_res and len(punc_res) > 0:
+                return punc_res[0].get('text', '').strip()
+            return raw_text
     finally:
         MODEL.model.to("cpu")
         MODEL.kwargs["device"] = "cpu"
