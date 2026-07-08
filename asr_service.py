@@ -1,4 +1,20 @@
 import os
+import psutil
+
+# 硬锁定 CPU 物理核心至前 6 个大核心 [0, 1, 2, 3, 4, 5]
+try:
+    psutil.Process().cpu_affinity([0, 1, 2, 3, 4, 5])
+except Exception as e:
+    print(f"CPU 亲和性设置失败: {e}")
+
+# 限制底层计算库的多线程并发数量以节省 CPU 算力，防止疯跑锁死
+os.environ["OMP_NUM_THREADS"] = "6"
+os.environ["MKL_NUM_THREADS"] = "6"
+os.environ["OPENBLAS_NUM_THREADS"] = "6"
+
+import torch
+torch.set_num_threads(6)
+
 import time
 import tempfile
 import asyncio
@@ -8,7 +24,6 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from funasr import AutoModel
 import uvicorn
-import torch
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
