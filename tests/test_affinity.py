@@ -7,4 +7,4 @@ import psutil
 def test_cpu_affinity():
     affinity = psutil.Process().cpu_affinity()
     print("Current CPU Affinity:", affinity)
-    assert set(affinity).issubset({0, 1, 2, 3})
+    assert set(affinity).issubset({0, 1, 2, 3, 4, 5})

@@ -1,18 +1,18 @@
 import os
 import psutil
 
-# 1. Windows CPU 核心硬性亲和性绑定 (只允许在前4个核心上运行，防止全核拉满死机)
+# 1. Windows CPU 核心硬性亲和性绑定 (只允许在前6个大核上运行，防止全核拉满死机)
 try:
-    psutil.Process().cpu_affinity([0, 1, 2, 3])
+    psutil.Process().cpu_affinity([0, 1, 2, 3, 4, 5])
 except Exception as e:
     print(f"警告：设置 CPU 亲和性失败: {e}")
 
 # 2. 设置线程数软防线
-os.environ["OMP_NUM_THREADS"] = "4"
-os.environ["MKL_NUM_THREADS"] = "4"
-os.environ["OPENBLAS_NUM_THREADS"] = "4"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
-os.environ["NUMEXPR_NUM_THREADS"] = "4"
+os.environ["OMP_NUM_THREADS"] = "6"
+os.environ["MKL_NUM_THREADS"] = "6"
+os.environ["OPENBLAS_NUM_THREADS"] = "6"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "6"
+os.environ["NUMEXPR_NUM_THREADS"] = "6"
 
 # 2. 动态添加 DLL 搜索目录以点亮 onnxruntime GPU 推理
 ctranslate2_dll_path = r"E:\conda\envs\asr_ui_env\Lib\site-packages\ctranslate2"
@@ -48,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from funasr import AutoModel
 import uvicorn
 import torch
-torch.set_num_threads(4)
+torch.set_num_threads(6)
 
 # 添加 SenseVoiceSmall 目录到 PYTHONPATH
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
@@ -171,7 +171,7 @@ def load_models():
             batch_size=16,
             quantize=True,
             device_id="0",
-            intra_op_num_threads=4
+            intra_op_num_threads=6
         )
         # 2. 加载 VAD
         VAD_MODEL = AutoModel(
