@@ -41,16 +41,18 @@ app.add_middleware(
 
 MODEL = None
 VAD_MODEL = None
+PUNC_MODEL = None
 GPU_SEMAPHORE = asyncio.Semaphore(3)  # 并发限制，防范 CUDA OOM
 MAX_FILE_SIZE = 50 * 1024 * 1024      # 50MB 内存防线
 
 @app.on_event("startup")
 def load_models():
-    global MODEL, VAD_MODEL
+    global MODEL, VAD_MODEL, PUNC_MODEL
     model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall"
     vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
+    punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
     
-    logger.info("正在 GPU (CUDA) 上加载 ASR 和 VAD 模型...")
+    logger.info("正在 GPU (CUDA) 上加载 ASR 和 VAD 模型，并载入标点模型...")
     try:
         # 1. 加载 ASR 语音识别模型
         MODEL = AutoModel(
@@ -67,7 +69,15 @@ def load_models():
             disable_update=True,
             disable_pbar=True
         )
-        logger.info("ASR 和 VAD 模型全部加载成功！")
+        # 3. 加载 PUNC 标点模型
+        PUNC_MODEL = AutoModel(
+            model=punc_path,
+            trust_remote_code=True,
+            device="cpu",
+            disable_update=True
+        )
+        PUNC_MODEL.device = "cpu"
+        logger.info("ASR、VAD 和标点模型全部加载成功！")
     except Exception as e:
         logger.error(f"模型加载失败: {e}")
         raise e
