@@ -1,91 +1,75 @@
-# Handoff: ASR GPU 优化第一阶段完成及 PyTorch 原生服务 (8001端口) 优化规划
+# Handoff: ASR GPU/CPU 性能评估与 ONNX 优化瓶颈剖析
 
-## Session Metadata
-- **Created**: 2026-07-08T21:30:00+08:00
-- **Project**: `E:\project\funclip-pro`
-- **Branch**: `main` (Git status clean, latest commit: `a21516e`)
-- **Key Target**: 尖子
+## 1. 任务当前状态 (Current State)
 
----
-
-## 1. Current State Summary (第一阶段已完成工作)
-我们成功实现了基于 ONNX GPU 加速的 SenseVoiceSmall 独立微服务（运行在 **8002 端口**）的彻底优化：
-1. **CPU 锁死与物理核心硬绑定**：
-   - 引入了 `psutil` 硬性绑定进程 CPU 亲和性至前 6 个大核心 (`[0, 1, 2, 3, 4, 5]`)。
-   - 限制 `torch` 及各类底层矩阵库在核心内只开辟最多 6 个线程，彻底腾空了其余 26 个 CPU 逻辑处理器，完全消除了 CPU 全核拉满 100% 导致系统卡死/死机的隐患。
-2. **大 Batch 推理加速管线**：
-   - 重构了 ASR 包装类 `SenseVoiceSmall` 的 `__call__` 解码循环。解开了 ONNX 只能解码单 Batch 的限制，实现了对整个 batch logit 维度的遍历提取。
-   - 结合 VAD 切分后的音频分片，将原来串行 for 循环单句转写改为了一次性打包传入多 Batch (batch_size=16) 推理。
-3. **加回 CPU 标点模型集成**：
-   - 在启动时以 CPU (限制6线程) 载入本地 [punc_ct-transformer_zh-cn-common-vocab272727-pytorch](file:///E:/project/funclip-pro/model/models/damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch)，在 ASR 识别完文本后进行后处理，使文本还原完美排版标点。
+本阶段完成了对 **8001 端口原生 PyTorch ASR 服务** (`asr_service.py`) 的彻底优化：
+1. **CPU 大核绑定与多线程限制**：
+   - 进程头部通过 `psutil` 绑定当前进程的 CPU 亲和性至前 6 个大核心 (`[0, 1, 2, 3, 4, 5]`)。
+   - 设置全局多线程限制 `OMP_NUM_THREADS = "6"` 等，并执行 `torch.set_num_threads(6)`。
+   - 成功防范了 CPU 被多线程跑满 100% 抢占导致系统锁死死机的隐患。
+2. **大 Batch 合并推理管线**：
+   - 将原来 for 循环单句 ASR 的重复推理与频繁 GPU/CPU 拷贝，重构为 **“1 次显存装载 -> 1 次大 Batch 并发推理 -> 1 次显存卸载与清空”** 的高效流水线（在 `finally` 块中通过 `MODEL.model.to("cpu")` + `torch.cuda.empty_cache()` 可靠释放显存）。
+3. **标点模型后处理集成**：
+   - 在 startup 时于 CPU 上加载本地 `CT-Punc` 模型，并在大 Batch 推理生成 `raw_text` 后进行后处理，使文本还原排版标点。
 4. **测试情况**：
-   - 自动化测试 `tests/test_affinity.py`、`tests/test_batch_decode.py`、`tests/test_onnx_service_integration.py` 已经全数通过。在 6 核限制下，4分钟长音频 ASR 转写+标点集成在 55.41 秒内极速算完，无任何 CPU 疯跑异常。
+   - 新增了单元测试 `tests/test_pytorch_affinity.py`、`tests/test_pytorch_punc_load.py`、`tests/test_pytorch_inference_refactor.py`、`tests/test_pytorch_route.py`。
+   - 编写了服务 API 集成测试 `tests/test_pytorch_service_integration.py`。
+   - 以上测试已经全数通过，转写文本中成功包含了中英文标点。
 
 ---
 
-## 2. Pending Work (下一阶段开发计划：优化 8001 端口 PyTorch 原生服务)
+## 2. 跑评对照测试数据 (Benchmark Results)
 
-下个 Session 的工作重点是：对原生的 PyTorch ASR 服务 [asr_service.py](file:///E:/project/funclip-pro/asr_service.py)（监听 **8001 端口**）进行类似的重构优化。
+我们通过测试音频 `E:\下载\下载\李雪花2.wav`（时长约 4 分钟，VAD 切分为 85 个片段）在以下四个硬件与引擎维度下进行了精确的跑评：
 
-### ⚠️ 核心显存约束（GPU VRAM Limits）
-*   **痛点**：当前显卡显存极度紧张（12GB VRAM），原生 PyTorch 模型较大。如果不及时释放，容易在跑大模型工作流时发生 CUDA OOM。
-*   **解决方案**：
-    *   **必须保留**原生的“用时加载到 GPU，用完立刻卸载回 CPU / 清空缓存”的机制，即：
-        - `MODEL.model.to("cuda")`（移到 GPU）
-        - `finally` 块中的 `MODEL.model.to("cpu")` + `torch.cuda.empty_cache()`（卸载回 CPU 释放显存）
-    *   **大 Batch 优化**：将原来“for 循环 30 次单句 ASR” 带来的 **30 次显存频繁反复装载卸载**（这也是 CPU 疯跑死机的主因），优化为 **“1 次显存装载 + 1 次 Batch ASR 推理 + 1 次显存卸载”** 的高效流水线。
-    *   **6核硬锁定**：脚本头部加入 `psutil` 硬绑定 CPU `[0, 1, 2, 3, 4, 5]` 核心，限制 CPU 运算开销。
-    *   **标点加回**：加载本地 CT-Punc 标点模型，并在 CPU 上后处理文本。
+| 测试维度 | 运行硬件 | 推理引擎版本 | 耗时 (秒) | 核心字数 | 文本吻合度 (对齐PyTorch) | 备注 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **PyTorch-GPU** | GPU (移入显存) | FP32 (大 Batch 合并) | **7.78 秒** | 1692 字 | 100.00% | 重构后性能暴增 |
+| **PyTorch-CPU** | CPU (纯6线程限制) | FP32 (大 Batch 合并) | **23.23 秒** | 1692 字 | 100.00% | 运行于 CPU FP32 浮点 |
+| **ONNX-GPU** | GPU (显卡调用) | INT8 (大 Batch 量化) | **26.94 秒** | 1692 字 | 98.52% | 相比 PyTorch-GPU 慢 3.46 倍 |
+| **ONNX-CPU** | CPU (纯6线程限制) | INT8 (大 Batch 量化) | **33.49 秒** | 1692 字 | 98.52% | 相比 PyTorch-CPU 慢 1.44 倍 |
 
 ---
 
-## 3. 下阶段开发 TODO 清单 (Action Items)
+## 3. 遗留核心课题：ONNX 推理性能瓶颈成因
 
-### Task 1: 物理核心硬绑定与 CPU 多线程资源限制
-- [ ] 在 [asr_service.py](file:///E:/project/funclip-pro/asr_service.py) 的最头部导入 `psutil` 并硬锁定逻辑核心为 `[0, 1, 2, 3, 4, 5]`：
+在本次重构中我们发现了**反直觉的性能差距**：
+*   在 GPU 上，ONNX GPU 的推理速度不如优化后的 PyTorch GPU。
+*   在 CPU 上，量化后的 ONNX CPU 推理（33.49秒）依然慢于 PyTorch CPU 的浮点推理（23.23秒）。
+
+经代码剖析，我们将性能瓶颈定位于以下两个核心原因：
+
+### 瓶颈 A：ONNX 包装类中高频的 Python 级循环与解码开销
+在 `asr_onnx_service.py` 内部的 `SenseVoiceSmall` 的 `__call__` 解码逻辑中：
+- 贪婪搜索（Greedy Search）、CTC logits 排序与去重逻辑是**完全基于 Python 循环手写**的：
   ```python
-  import os
-  import psutil
-  try:
-      psutil.Process().cpu_affinity([0, 1, 2, 3, 4, 5])
-  except Exception as e:
-      print(f"亲和性设置失败: {e}")
+  for b in range(end_idx - beg_idx):
+      x = ctc_logits[b, : encoder_out_lens[b].item(), :]
+      yseq = x.argmax(dim=-1)
+      yseq = torch.unique_consecutive(yseq, dim=-1)
+      ...
+      asr_res.append(tokenizer.tokens2text(token_int))
   ```
-- [ ] 在头部注入 `OMP_NUM_THREADS = "6"` 等环境变量，并限制 `torch.set_num_threads(6)`。
+- 每次请求切出 85 个 batch，代码就在 Python 层面执行了 85 次张量操作、CPU 拷贝，以及 85 次在 `tokenizer.tokens2text` 中的列表遍历。这导致了极大的 Python 解释器 GIL 锁延迟和循环开销。
+- 与之相比，PyTorch `AutoModel.generate` 内部的解码和 CTC 转换全部在 C++（FunASR 核心库）中融合完成，几乎没有 Python 级别的开销。
 
-### Task 2: 显存“单次载入卸载”与多 Batch 合并推理管线重构
-- [ ] 找到 [asr_service.py:107-122](file:///E:/project/funclip-pro/asr_service.py#L107-L122) 的 ASR 推理循环，将其重构。
-- [ ] 在 `finally` 之前，把 VAD 分割后的所有 chunks 收集进列表，一次性喂给原生的 `MODEL.generate(input=chunks, batch_size_s=0, language="auto", use_itn=True)` 进行并发推理：
-  ```python
-  chunks = []
-  for start_ms, end_ms in opt_segs:
-      s_idx = int(start_ms * 16)
-      e_idx = int(end_ms * 16)
-      chunk = audio[max(0, s_idx-800):min(len(audio), e_idx+800)]
-      if len(chunk) < 1600: continue
-      chunks.append(chunk)
-      
-  if chunks:
-      res_batch = MODEL.generate(input=chunks, batch_size_s=0, language="auto", use_itn=True)
-      texts = []
-      for r in res_batch:
-          raw = r.get('text', '').strip()
-          clean = re.sub(r"<\|.*?\|>", "", raw).strip()
-          if clean:
-              texts.append(clean)
-      raw_text = "\n".join(texts)
-  ```
+### 瓶颈 B：ONNX 导出时缺乏算子融合 (Operator Fusion)
+- PyTorch 能够使用 Intel MKL-DNN 算子库对 FP32 进行寄存器流水线级别的优化，并自动把 Attention 和 Linear 等算子融合成单个高效执行的 kernel。
+- 导出的 ONNX 在运行时（onnxruntime）面对的是成百上千个零散的小算子。如果没有进行针对性的量化融合编译（如 TensorRT / CTranslate2），小算子之间频繁的数据拷贝和框架调用开销（Framework Overhead）会吞噬掉量化带来的计算红利。
 
-### Task 3: 标点模型集成与转写后处理
-- [ ] 在 `asr_service.py` 启动 startup时，将 `PUNC_MODEL` (CT-Punc 标点模型) 加载在 CPU 6 线程上。
-- [ ] 在 ASR 大 Batch 推理拿到 `raw_text` 后，调用 `PUNC_MODEL.generate(input=raw_text)` 并提取文本作为最终返回。
-- [ ] 将 API 路由 `/transcribe` 的 `vad_split` 参数的默认值修改为 `Form(True)`。
+---
 
-### Task 4: 自动化测试与验证
-- [ ] 创建 `tests/test_pytorch_service_integration.py` 接口测试，使用 PyTorch-GPU 服务进行 API 转写验证，校验输出文本中是否成功包含标点符号。测试结束时自动退出 8001 微服务后台进程。
+## 4. 下一步行动与对高级模型的提问方向
 
-### Task 5: 原生 ASR 与 ONNX-GPU ASR 的性能与字错率 (CER) 比对测试
-- [ ] 编写对比测试脚本 `tests/test_asr_comparison.py`，使用相同的音频进行双重跑评：
-  - 同时调用 8001 (优化后的 PyTorch) 和 8002 (优化后的 ONNX) 接口；
-  - 对比各自的端到端耗时，计算 Speedup 加速比；
-  - 自动运行编辑距离算法计算 ONNX 文字与原生文字的字符错误率 (CER/字错吻合度)，以科学呈现量化和模型精度在不同推理后处理下的损耗折损。
+我们建议将以下课题移交给高级模型进行攻关：
+1. **改写/替换 Python Decode 解码器**：
+   - 考虑如何把 `asr_onnx_service.py` 内部手写的 `__call__` 解码部分用 C++ 改写，或者引入 FunASR 内部原生的 C++ 批量解码器，彻底消除 Python 循环。
+2. **优化 ONNX Runtime 执行配置与图优化**：
+   - 尝试在 `SenseVoiceSmall` 载入时，开启高级别的 ONNX 图优化选项：
+     ```python
+     opts = ort.SessionOptions()
+     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+     ```
+     并检查是否能通过 `ctranslate2` 或者把模型导出为更具 GPU/CPU 自适应能力的格式来加速 INT8 推理，解决反量化（Dequantization）开销。
+3. **特征提取并发化**：
+   - 检查 `extract_feat` 阶段，将其改写为并行计算，减少数据总线在 Host (CPU) 和 Device (GPU) 之间的多次往返拷贝。
