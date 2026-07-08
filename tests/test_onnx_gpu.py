@@ -136,6 +136,32 @@ def test_onnx_gpu_pipeline():
     text = run_pipeline(model_gpu, vad_model, audio_path)
     assert len(text) > 0
 
+def test_onnx_api_endpoint():
+    """自动化验证 ASR ONNX API 服务的 HTTP 接口"""
+    import httpx
+    import time
+    audio_path = r"E:\下载\下载\李雪花2.wav"
+    url = "http://127.0.0.1:8002/transcribe"
+    
+    assert os.path.exists(audio_path), f"音频文件不存在: {audio_path}"
+    
+    with open(audio_path, "rb") as f:
+        files = {"file": ("李雪花2.wav", f, "audio/wav")}
+        data = {"vad_split": "true"}
+        
+        t0 = time.time()
+        response = httpx.post(url, files=files, data=data, timeout=60.0)
+        duration = time.time() - t0
+        
+    assert response.status_code == 200, f"接口请求失败: {response.status_code}, {response.text}"
+    result = response.json()
+    assert "text" in result
+    assert "latency_ms" in result
+    
+    print(f"\n[API 接口测试] API 响应耗时: {duration:.4f} 秒")
+    print(f"[API 接口测试] 服务端报告推理耗时: {result['latency_ms']:.2f} ms")
+    print(f"[API 接口测试] 转写结果文本:\n{result['text']}\n")
+
 def main():
     audio_path = r"E:\下载\下载\李雪花2.wav"
     vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
