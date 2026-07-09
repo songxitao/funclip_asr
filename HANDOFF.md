@@ -120,6 +120,7 @@
 | `tests/test_torch_engine.py` | PyTorch 引擎接口测试（模型目录缺失时跳过）|
 | `tests/test_sherpa_engine.py` | 引擎单测 |
 | `tests/test_onnx_service_integration.py` | 端口 8002 集成测试（李雪花2.wav，断言带标点 JSON）|
+| `tests/test_decode_fallback.py` | `_decode` 引擎路由 + PyTorch→Sherpa 失败回退测试（monkeypatch 假引擎，不加载模型，3 passed）|
 | `tests/bench_sherpa_vs_pytorch.py` | 双引擎评测脚本 |
 | `tests/bench_report.json` | 评测结果（§3 数字来源）|
 | `tests/verify_punc_sources.py` | 标点来源验证（Sherpa vs PyTorch 原生输出对比）|
@@ -148,8 +149,56 @@ texts: list[str] = engine(audio_path_or_list_of_np_arrays)  # <1600 采样点自
 - [x] `auto` 策略：短音频(<5s)走 trim 直解，长音频走 FSMN VAD。
 - [x] CUDA 可用时自动走 PyTorch-GPU，否则 Sherpa-CPU；`engine` 参数可强制覆盖。
 - [x] `POST /transcribe` 仍返回带标点 JSON（并新增 `engine` 字段）。
-- [x] 现有 3 项测试 + 新增测试全部全绿（共 10 项：test_routing 6 + test_sherpa_engine 2 + test_torch_engine 1 + test_onnx_service_integration 1）。
+- [x] 现有 3 项测试 + 新增测试全部全绿（共 13 项：test_routing 6 + test_sherpa_engine 2 + test_torch_engine 1 + test_decode_fallback 3 + test_onnx_service_integration 1，详见 §10.2）。
 - [x] 生成 Dify OpenAPI schema 文件，可直接导入 Dify 自定义工具。
 
 ---
-*本 handoff 覆盖至 2026-07-09 21:28。对接窗口建议用 project-docking 读取本文件 + codegraph 同步符号，再用 writing-plans / executing-plans 推进 §4。*
+## 10. 晚场收尾工作（2026-07-09 22:08 追加 — 验证 + 提交拆分 + 回退测试）
+
+本段由 agent 在子智能体完成 §4 后，独立「trust but verify」补做，目的是把之前未坐实的环节闭合。
+
+### 10.1 关键发现：测试环境不是系统 Python
+- 之前一度以为「子智能体声称的 9 passed 复现不了」——根因是**找错了解释器**。
+- **能跑测试的唯一环境是 conda venv**：`E:\conda\envs\asr_ui_env\python.exe`（Python 3.11.14，`funasr==1.2.7`、`sherpa-onnx==1.13.4`、`pytest==9.1.1` 都已装）。
+- 系统 Python `D:\program files\python\python.exe` **缺 `funasr` / `sherpa_onnx`**，`import asr_onnx_service` 会直接因 `from funasr import AutoModel` 失败，collect 不起来。
+- **唯一正确复跑命令**：
+  ```bash
+  E:\conda\envs\asr_ui_env\python.exe -m pytest tests/test_routing.py tests/test_sherpa_engine.py tests/test_torch_engine.py tests/test_decode_fallback.py -q
+  ```
+- ⚠️ 不要直接 Read 源码（用户硬约束）；读码一律走 `codegraph node <file>`。
+
+### 10.2 独立验证结果（已坐实）
+- 单测：**`test_routing` 6 + `test_sherpa_engine` 2 + `test_torch_engine` 1 + `test_decode_fallback` 3 = 12 passed**（约 10.4s）。
+- 集成：`test_onnx_service_integration.py`（起 8002 服务，POST 李雪花2.wav，断言带标点 JSON）→ **1 passed**（约 24.6s）。
+- `codegraph node asr_onnx_service.py` 逐行确认 §4 核心逻辑均在：
+  - `_select_engine()`：cpu→sherpa / gpu→torch / auto→CUDA 可用且长音频走 torch 否则 sherpa。
+  - `_use_vad(vad_strategy, duration_ms)`：always / never / auto 三态。
+  - `_cheap_trim(audio_path, top_db=SHORT_TRIM_TOP_DB, pad_ms=TRIM_PAD_MS)`。
+  - `_decode()` 第 327–337 行：`except Exception → 回退 Sherpa-CPU`，PyTorch→Sherpa 兜底分支**确实存在**（并在 10.3 被强制练到）。
+  - `torch_engine.PyTorchSenseVoice` 惰性加载（锁内，防集成测试超时）。
+
+### 10.3 补齐唯一缺口：PyTorch→Sherpa 回退测试
+- `_decode` 的 `except → 回退 Sherpa` 分支此前**从没被强制触发过验证**。新增 `tests/test_decode_fallback.py`：
+  - 用 `monkeypatch` 注入假引擎，**强制 torch 分支抛错**，断言仍回退 Sherpa 返回文本——`except` 兜底分支第一次被真正练到。
+  - 覆盖三态：torch 成功 / torch 失败回退 / sherpa 直连。**3 passed**，**不加载任何模型**。
+
+### 10.4 提交拆分（git 历史已重写，纯本地、安全）
+- 原提交 `5ac6852` 用 `git add -A` 把**前会话交付物**（sherpa_engine.py / bench 脚本与报告 / verify_punc_sources.py / 集成计划 doc）也误并入同一提交。
+- 已 `git reset --soft` 拆成两个独立提交，当前链：
+  - `c7ca931` test: 新增 `_decode` 引擎路由与 PyTorch→Sherpa 回退测试
+  - `ff5d193` feat: §4 vad_strategy 三态 + 引擎自动路由 + _cheap_trim + Dify OpenAPI schema
+  - `9a3c432` chore: 前会话交付物（sherpa 引擎 / bench / punc 校验 / 集成计划）
+  - `3242e0a` 父提交（原封不动）
+- 无远程、无 upstream，改写历史不涉及 force push，安全。
+
+### 10.5 已知小问题（非阻塞）
+- `pytest tests/` 全目录一起跑时，集成测试起服务线程会触发 pytest 输出捕获冲突（`I/O on closed file`）——属 harness 隔离问题，**非代码缺陷**。拆开跑（单元集合 / 集成单独）即可全绿。
+
+### 10.6 验收标准（更新）
+- [x] 全部测试独立复跑全绿：单测 12 passed + 集成 1 passed。
+- [x] PyTorch→Sherpa 回退兜底分支被测试强制练到（不再是「写了没验」）。
+- [x] 提交历史干净：§4 功能、前会话交付物、回退测试三笔独立提交，互不混杂。
+- [x] 测试必须走 conda 环境 `asr_ui_env`，已写入 §1/§10.1，接手人勿踩系统 Python 的坑。
+
+---
+*本 handoff 覆盖至 2026-07-09 22:08。对接窗口建议用 project-docking 读取本文件 + codegraph 同步符号，再用 writing-plans / executing-plans 推进后续（如：修复 §10.5 capture 冲突、给 Dify schema 配实际调用样例）。*
