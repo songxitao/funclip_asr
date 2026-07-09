@@ -12,7 +12,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "6"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "6"
 os.environ["NUMEXPR_NUM_THREADS"] = "6"
 
-def run_performance_test():
+def test_performance():
     tokens_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmallOnnx\tokens.txt"
     model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmallOnnx\model.int8.onnx"
     audio_path = r"E:\下载\下载\李雪花2.wav"
@@ -83,4 +83,4 @@ def run_performance_test():
 if __name__ == "__main__":
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
-    run_performance_test()
+    test_performance()
