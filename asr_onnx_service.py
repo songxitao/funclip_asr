@@ -1,18 +1,13 @@
 import os
 import psutil
 
-# 1. Windows CPU 核心硬性亲和性绑定 (只允许在前6个大核上运行，防止全核拉满死机)
 try:
     psutil.Process().cpu_affinity([0, 1, 2, 3, 4, 5])
 except Exception as e:
     print(f"警告：设置 CPU 亲和性失败: {e}")
 
-# 2. 设置线程数软防线
-os.environ["OMP_NUM_THREADS"] = "6"
-os.environ["MKL_NUM_THREADS"] = "6"
-os.environ["OPENBLAS_NUM_THREADS"] = "6"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "6"
-os.environ["NUMEXPR_NUM_THREADS"] = "6"
+for env_var in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"]:
+    os.environ[env_var] = "6"
 
 # 2. 动态添加 DLL 搜索目录以点亮 onnxruntime GPU 推理
 ctranslate2_dll_path = r"E:\conda\envs\asr_ui_env\Lib\site-packages\ctranslate2"
@@ -121,18 +116,22 @@ class SenseVoiceSmall(SenseVoiceSmallONNX):
                 np.array(cur_language, dtype=np.int32), 
                 np.array(cur_textnorm, dtype=np.int32)
             )
-            # 返回 torch.Tensor 便于按维度解析
-            ctc_logits = torch.from_numpy(ctc_logits).float()
+            # 1. 向量化批量解码，替换逐句循环，消除 CPU-GIL 延迟
+            token_ids = np.argmax(ctc_logits, axis=-1)  # [B, T]
             
-            # 支持多 batch 的结果解析
-            for b in range(end_idx - beg_idx):
-                x = ctc_logits[b, : encoder_out_lens[b].item(), :]
-                yseq = x.argmax(dim=-1)
-                yseq = torch.unique_consecutive(yseq, dim=-1)
-
-                mask = yseq != self.blank_id
-                token_int = yseq[mask].tolist()
-                
+            encoder_lens_np = np.array([l.item() if hasattr(l, 'item') else l for l in encoder_out_lens])
+            max_time = token_ids.shape[1]
+            time_indices = np.arange(max_time)[None, :]
+            valid_mask = time_indices < encoder_lens_np[:, None]
+            
+            shifted = np.roll(token_ids, 1, axis=-1)
+            shifted[:, 0] = -1
+            repeat_mask = (token_ids == shifted)
+            
+            keep_mask = valid_mask & (~repeat_mask) & (token_ids != self.blank_id)
+            
+            for b in range(cur_batch_size):
+                token_int = token_ids[b][keep_mask[b]].tolist()
                 asr_res.append(tokenizer.tokens2text(token_int))
         return asr_res
 
@@ -165,12 +164,14 @@ def load_models():
     
     logger.info("正在加载 ONNX GPU ASR 模型、CPU VAD 模型和 CPU 标点模型...")
     try:
-        # 1. 加载 ASR (将 batch_size 修改为 16 以适配大 batch 推理)
+        # 1. 加载 ASR (通过环境变量决定 device_id，"-1" 表示纯 CPU)
+        force_cpu = os.environ.get("FORCE_CPU") == "1"
+        device_id = "-1" if force_cpu else "0"
         MODEL = SenseVoiceSmall(
             model_dir=model_path,
             batch_size=16,
             quantize=True,
-            device_id="0",
+            device_id=device_id,
             intra_op_num_threads=6
         )
         # 2. 加载 VAD

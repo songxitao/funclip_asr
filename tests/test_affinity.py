@@ -1,10 +1,13 @@
 import os
 import sys
-# 导入 ASR 服务模块，这会触发头部 affinity 绑定
-import asr_onnx_service
 import psutil
+import pytest
 
 def test_cpu_affinity():
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import asr_onnx_service
+    
     affinity = psutil.Process().cpu_affinity()
     print("Current CPU Affinity:", affinity)
     assert set(affinity).issubset({0, 1, 2, 3, 4, 5})
+    assert len(affinity) <= 6
