@@ -1,67 +1,45 @@
-# SenseVoice ASR 性能优化深度分析与高级模型提问指引 (README_PERF)
+# SenseVoice ASR 性能优化深度分析与四向跑评报告 (README_PERF)
 
-本文件整理了监听 8001 端口的原生 PyTorch 服务与 8002 端口的 ONNX 服务在 GPU/CPU 维度的四向跑评数据，并为尖子提炼了针对高级模型的深度提问 Prompt，以便您在新会话中直接开展后续研究。
+本文件汇总整理了 `funclip-pro` 项目在 GPU 显卡轨道与 CPU 锁定状态下，使用各种 ASR 推理方案时的跑评数据、瓶颈分析以及最终优化落地的测试结果。
 
 ---
 
-## 1. 四向性能与字错吻合度 (CER) 报表
+## 1. 跑评数据汇总对照表 (全景图)
 
-使用 4 分钟长音频 `李雪花2.wav`（VAD 划分 85 个音频片段）测试，数据结果如下：
+所有跑评数据均基于相同测试环境：
+* **系统环境**：Conda 虚拟环境 `asr_ui_env`，CPU 限制前 6 个大核心物理核。
+* **测试音频**：7 分钟 (424.49 秒) 长音频 `李雪花2.wav`，由 PyTorch FSMN-VAD 划分为 **85** 个音频片段进行大 Batch 并发推理。
 
-| 推理引擎 | GPU (移入显存) | CPU (纯6线程限制) | 加速比 (GPU/CPU) | 核心字数 | 较 PyTorch 文字吻合度 |
+| 推理设备 | ASR 推理方案 | 引擎加载/冷启动时间 | 85个片段批量推理耗时 (热启动) | 实时率 (RTF) | 较 PyTorch-CPU 提速比 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **PyTorch 原生 (FP32)** | **7.78 秒** | **23.23 秒** | **2.98x** | 1692 字 | 100.00% (Baseline) |
-| **ONNX (INT8 量化)** | **26.94 秒** | **33.49 秒** | **1.24x** | 1692 字 | 98.52% (CER 1.48%) |
-
-*   **数据亮点**：
-    1.  **PyTorch 优化巨大成功**：在 GPU 上仅耗时 **7.78 秒**，彻底解决了因 VAD 重复拷贝显存和 `empty_cache()` 导致的 CPU 锁死疯跑问题。
-    2.  **性能反转现象**：
-        - 在 GPU 上，PyTorch 速度是 ONNX 的 **3.46 倍**。
-        - 在 CPU 上，未量化的 PyTorch FP32（23.23秒）依然比量化后的 ONNX INT8（33.49秒）快了 **1.44 倍**。
+| **GPU** | **PyTorch FP32 (CUDA)** | ~4.50 秒 | **7.74 秒** | **0.0182** | **2.09x** *(GPU 极速极限)* |
+| **GPU** | **ONNX INT8 (ORT CUDA)** | 4.59 秒 | **32.33 秒** | **0.0761** | **0.50x** *(GPU 灾难瓶颈)* |
+| **CPU** | **Sherpa-ONNX INT8 (新方案)** | **0.87 秒** | **10.52 秒** | **0.0248** | **1.54x** *(CPU 终极提速)* |
+| **CPU** | **PyTorch FP32 (基准)** | ~4.50 秒 | **16.19 秒** | **0.0381** | **1.00x** *(基准对照)* |
+| **CPU** | **OpenVINO INT8 (原 ONNX)**| 4.76 秒 | **30.96 秒** | **0.0729** | **0.52x** *(CPU 慢轨)* |
+| **CPU** | **ONNX Runtime INT8 (原 ONNX)**| 4.59 秒 | **33.49 秒** | **0.0788** | **0.48x** *(CPU 慢轨)* |
 
 ---
 
-## 2. 核心瓶颈理论分析
+## 2. 核心性能反转与瓶颈分析
 
-1.  **解码后处理的 Python 性能蚕食**：
-    ONNX 版本的 `SenseVoiceSmall` 的 `__call__` 函数采用纯 Python 编写了 Greedy Search 和 CTC 去重后处理：
-    ```python
-    for b in range(end_idx - beg_idx):
-        x = ctc_logits[b, : encoder_out_lens[b].item(), :]
-        yseq = x.argmax(dim=-1)
-        yseq = torch.unique_consecutive(yseq, dim=-1)
-        ...
-        asr_res.append(tokenizer.tokens2text(token_int))
-    ```
-    对于 85 个片段，循环了解码 85 次。在 Python 层面频繁执行张量切片、NumPy/List 转换以及字符映射循环，受制于 Python 解释器的 GIL 锁与低执行效率。而 PyTorch 原生的 `AutoModel.generate` 所有的解码逻辑均被编译成 C++（FunASR 核心）在底层高并发融合运行，近乎零 Python 开销。
+### 🔍 为什么在 CPU 上 ONNX Runtime / OpenVINO 比 PyTorch FP32 还慢？
+1. **显式量化算子 (Q/DQ) 阻碍算子融合**：
+   导出的 ONNX 图中掺杂了成百上千个散乱的 `QuantizeLinear`/`DequantizeLinear` 动态转换算子。这打断了通用引擎原本的 Attention/MatMul 融合规则，导致引擎需要频繁在主存和寄存器间搬运数据。
+2. **小矩阵计算密度不足以摊薄开销**：
+   SenseVoice 属于小 hidden_dim (560) 的声学模型，属于典型的内存带宽受限型 (Memory-bound) 计算。INT8 理论的 4 倍计算指令集算力优势无法被充分兑现，反而被动态反量化开销蚕食殆尽。
 
-2.  **ONNX 算子零散与反量化开销**：
-    - 量化模型在 GPU (CUDA) 运行时，会产生频繁的 **动态反量化 (Dequantization) 回 FP32** 的显存开销。
-    - ONNX 导出的图结构包含了成百上千个零散的小算子，由于缺乏像 PyTorch 编译级（或 TensorRT 级别）的**算子融合 (Operator Fusion)** 优化，框架调度开销（Framework Overhead）极高，抵消了量化所节约的矩阵计算时间。
+### 🔍 为什么在 GPU 上 ONNX Runtime (32.33s) 比 PyTorch FP32 (7.74s) 慢 4.17 倍？
+* **动态量化导致 CUDA 调度灾难**：
+  CUDA 核适合连续的、大批量的浮点并行乘法。在 GPU 运行 INT8 动态量化模型时，每次矩阵相乘前必须动态计算 Scale，并在 CUDA 显存里执行 FP32 $\rightarrow$ INT8 $\rightarrow$ FP32 的转换，导致大量细碎的 CUDA Kernel Launch 延时和同步开销，将 GPU 拖成慢速卡。
 
 ---
 
-## 3. 专属提问高级模型的 Prompt (可以直接复制)
+## 3. 为什么 Sherpa-ONNX 能取得 CPU 终极提速？
 
-您在新会话中将这段 Prompt 直接输入给高级模型，能帮助它瞬间接管项目并进行最深度的攻关：
+在相同的 6 线程 CPU 下，`Sherpa-ONNX` 方案取得了 **10.52秒** 的热推理耗时，比 PyTorch FP32 (16.19s) 快了 **54%**。其成功的技术原因包括：
 
-```markdown
-我正在开发基于 FunASR 的语音转写项目 (funclip-pro)。
-我们目前对 8001 端口的原生 PyTorch ASR 服务 (SenseVoiceSmall) 和 8002 端口的 ONNX INT8 量化服务 (SenseVoiceSmall-ONNX) 进行了 CPU 6核锁定状态下的四向跑评测试。
-
-测试音频为 4 分钟 WAV 音频，被 VAD 划分为了 85 个音频片段，测试结果如下：
-1. PyTorch-GPU FP32 耗时: 7.78 秒
-2. PyTorch-CPU FP32 耗时: 23.23 秒
-3. ONNX-GPU INT8 量化耗时: 26.94 秒
-4. ONNX-CPU INT8 量化耗时: 33.49 秒
-
-【现状剖析】
-我们初步定位了 ONNX 的性能瓶颈：
-- 瓶颈一：在 asr_onnx_service.py 中，ONNX 的解码和 CTC 后处理（Greedy Search、argmax、去重和 token2text 映射）全部是在 Python 级别用 for 循环手写的（比如遍历 batch 执行 x.argmax 和 tokens2text），带来了极大的 Python 解释器 GIL 锁与 CPU 循环开销。而 PyTorch 版底层是 C++ 级融合解码。
-- 瓶颈二：导出的 ONNX 模型算子极度散乱，在 onnxruntime 运行时缺乏图级别的算子融合优化，且在 GPU 上可能存在频繁的反量化（INT8->FP32）额外吞吐开销。
-
-【请你解答并提供具体的代码优化方案】
-1. 针对“解码后处理的 Python 性能蚕食”，我们如何重构 asr_onnx_service.py 内部的解码逻辑？有没有办法绕过 Python 循环，使用 NumPy 向量化操作，或者通过 FunASR 内部原生的 C++ 解码工具来批量解算 logits 从而消灭 CPU-GIL 延迟？请给出具体的优化代码。
-2. 针对 ONNX 算子离散与量化速度缓慢，我们如何配置 onnxruntime 的 Graph Optimization Level？或者有没有比 ctranslate2 或其他推理引擎更适合 SenseVoiceSmall INT8 模型的推理引擎导出/部署方式？
-3. 如果我们想要彻底点亮 ONNX 在 CPU 上的量化加速潜力，应该如何优化 waveform 到 features 的特征提取 (extract_feat) 并发度？
-```
+1. **定制化的 C++ ASR 全管线**：
+   `Sherpa-ONNX` 是由原开发团队为特定模型量身定制的轻量化 C++ 识别框架。它在底层原生实现了极致的量化算子融合，几乎做到了零动态反量化内存拷贝。
+2. **C++ 批量流式接口 `decode_streams`**：
+   测试中我们创建了 85 个 `OfflineStream` 并行注入，由 `decode_streams` 在底层高并发拉满物理核。这种全 C++ 管线极大地绕过了 Python 解释器的 GIL 锁和频繁的张量切片复制，实现了最彻底的性能优化。
