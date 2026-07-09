@@ -84,11 +84,12 @@ def load_models():
 
 def _run_inference(audio_path: str, vad_split: bool = False) -> str:
     """在独立线程中运行的同步推理逻辑，支持双轨模式"""
-    MODEL.model.to("cuda")
-    MODEL.kwargs["device"] = "cuda"
-    if vad_split:
-        VAD_MODEL.model.to("cuda")
-        VAD_MODEL.kwargs["device"] = "cuda"
+    if os.environ.get("FORCE_CPU") != "1":
+        MODEL.model.to("cuda")
+        MODEL.kwargs["device"] = "cuda"
+        if vad_split:
+            VAD_MODEL.model.to("cuda")
+            VAD_MODEL.kwargs["device"] = "cuda"
         
     try:
         if not vad_split:
@@ -162,12 +163,13 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
                 return punc_res[0].get('text', '').strip()
             return raw_text
     finally:
-        MODEL.model.to("cpu")
-        MODEL.kwargs["device"] = "cpu"
-        if vad_split:
-            VAD_MODEL.model.to("cpu")
-            VAD_MODEL.kwargs["device"] = "cpu"
-        torch.cuda.empty_cache()
+        if os.environ.get("FORCE_CPU") != "1":
+            MODEL.model.to("cpu")
+            MODEL.kwargs["device"] = "cpu"
+            if vad_split:
+                VAD_MODEL.model.to("cpu")
+                VAD_MODEL.kwargs["device"] = "cpu"
+            torch.cuda.empty_cache()
 
 @app.post("/transcribe")
 async def transcribe(
