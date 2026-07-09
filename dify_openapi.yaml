@@ -1,0 +1,89 @@
+# Dify 自定义工具 OpenAPI Schema —— funclip-pro ASR 微服务
+#
+# 用途：在 Dify 的「工具 → 自定义工具」中直接导入本文件，即可获得一个
+#       `POST /transcribe` 的 ASR 工具节点。节点只需「丢音频、取 text」，
+#       引擎选择（Sherpa-CPU / PyTorch-GPU）与 VAD 策略由服务端自动路由，
+#       不要在 Dify 侧做资源调度决策（详见 HANDOFF.md §2.2）。
+#
+# 导入方式：
+#   1. Dify 控制台 → 工具 → 自定义工具 → 创建 → 选「OpenAPI Schema」
+#   2. 把本文件内容整段粘贴进去（或上传本文件）
+#   3. 保存后，编排里即可调用，输入 `file`(音频二进制)，
+#      可选 `engine`(gpu/cpu) 与 `vad_strategy`(auto/always/never)
+#   4. 输出取 `body.text`（带标点符号的中文文本）
+openapi: 3.0.0
+info:
+  title: funclip-pro ASR 转写服务
+  description: >-
+    基于 SenseVoiceSmall 的实时语音转写微服务。支持 Sherpa-ONNX(CPU) 与
+    PyTorch(GPU) 双引擎自动路由，以及 auto/always/never 三态 VAD 策略。
+    返回带标点符号的中文文本。
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8002
+    description: 本地 ASR 服务（默认端口 8002）
+paths:
+  /transcribe:
+    post:
+      operationId: transcribe
+      summary: 语音转写
+      description: >-
+        接收一段音频（multipart/form-data），返回带标点符号的转写文本。
+        - file：音频文件（wav/mp3 等），必填
+        - engine：可选，强制指定后端；gpu=PyTorch-GPU，cpu=Sherpa-CPU；不传则自动路由
+        - vad_strategy：可选，VAD 策略；auto(默认)=短音频trim直解/长音频FSMN切分，
+          always=永远FSMN VAD，never=不做VAD切分（仍做廉价trim防幻觉）
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 音频文件（二进制）
+                engine:
+                  type: string
+                  enum:
+                    - gpu
+                    - cpu
+                  description: 可选。强制后端：gpu=PyTorch-GPU，cpu=Sherpa-CPU。留空则按 CUDA 可用性自动路由。
+                vad_strategy:
+                  type: string
+                  enum:
+                    - auto
+                    - always
+                    - never
+                  default: auto
+                  description: >-
+                    可选。VAD 策略：auto=短音频廉价trim直解、长音频完整FSMN VAD；
+                    always=永远FSMN VAD；never=不做VAD切分（仍做廉价trim）。
+              required:
+                - file
+      responses:
+        "200":
+          description: 转写成功，返回带标点文本
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+                    description: 带标点符号的转写文本
+                  latency_ms:
+                    type: number
+                    description: 端到端耗时（毫秒）
+                  engine:
+                    type: string
+                    description: 实际使用的引擎（sherpa / torch）
+                required:
+                  - text
+        "413":
+          description: 上传文件超过 50MB 限制
+        "500":
+          description: 服务端转写失败
+        "503":
+          description: 模型尚未初始化完毕

@@ -38,6 +38,7 @@ import tempfile
 import asyncio
 import re
 import logging
+import threading
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from funasr import AutoModel
@@ -47,9 +48,17 @@ torch.set_num_threads(6)
 
 from openvino import Core
 
+# 添加项目根目录到 sys.path，便于导入 sherpa_engine
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 # 添加 SenseVoiceSmall 目录到 PYTHONPATH
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
 from utils.model_bin import SenseVoiceSmallONNX
+
+from sherpa_engine import SherpaSenseVoice
+from torch_engine import PyTorchSenseVoice
 
 class SenseVoiceSmall(SenseVoiceSmallONNX):
     """包装类，重写了初始化和调用，适配用户要求的接口"""
@@ -190,6 +199,12 @@ PUNC_MODEL = None  # 新增标点模型全局变量
 GPU_SEMAPHORE = asyncio.Semaphore(3)  # 并发限制，防范 CUDA OOM
 MAX_FILE_SIZE = 50 * 1024 * 1024      # 50MB 内存防线
 
+# 标点清洗正则：用于剥掉 ASR 逐段原生标点（保留 ITN 规整后的数字与汉字）
+import re as _re
+_PUNC_RE = _re.compile(r"[，。！？；：、…—·「」『』“”‘’（）《》〈〉【】\[\]\(\)\{\}\"'\.,!?;:\s]")
+def strip_punctuation(s: str) -> str:
+    return _PUNC_RE.sub("", s).strip()
+
 @app.on_event("startup")
 def load_models():
     global MODEL, VAD_MODEL, PUNC_MODEL
@@ -197,17 +212,14 @@ def load_models():
     vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
     punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
     
-    logger.info("正在加载 ONNX GPU ASR 模型、CPU VAD 模型和 CPU 标点模型...")
+    logger.info("正在加载 Sherpa-ONNX ASR 模型、CPU VAD 模型和 CPU 标点模型...")
     try:
-        # 1. 加载 ASR (通过环境变量决定 device_id，"-1" 表示纯 CPU)
-        force_cpu = os.environ.get("FORCE_CPU") == "1"
-        device_id = "-1" if force_cpu else "0"
-        MODEL = SenseVoiceSmall(
-            model_dir=model_path,
-            batch_size=16,
-            quantize=True,
-            device_id=device_id,
-            intra_op_num_threads=6
+        # 1. 加载 ASR（Sherpa-ONNX INT8 后端，CPU 终极提速方案，已评测验证）
+        SHERPA_MODEL_DIR = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmallOnnx"
+        MODEL = SherpaSenseVoice(
+            model_dir=SHERPA_MODEL_DIR,
+            num_threads=6,
+            use_itn=True,
         )
         # 2. 加载 VAD
         VAD_MODEL = AutoModel(
@@ -236,112 +248,195 @@ def load_models():
         logger.error(f"模型加载失败: {e}")
         raise e
 
-def _run_inference(audio_path: str, vad_split: bool = True) -> str:
-    """在独立线程中运行的同步推理逻辑，默认支持开启 VAD"""
-    if not vad_split:
-        res = MODEL(audio_path)
-        if res and len(res) > 0:
-            raw_text = res[0].strip()
-            clean_text = re.sub(r"<\|.*?\|>", "", raw_text).strip()
-            return clean_text
-        return ""
-    else:
-        import librosa
-        audio, _ = librosa.load(audio_path, sr=16000)
-        
-        # 1. 运行 VAD 切分
-        vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
-        raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, len(audio)/16*1000]]
-        
-        # 2. 合并段
-        def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
-            if not segments: return []
-            merged = []
-            curr_start, curr_end = segments[0]
-            for next_start, next_end in segments[1:]:
-                gap = next_start - curr_end
-                duration = (curr_end - curr_start) + (next_end - next_start)
-                if gap < max_gap_ms and duration < max_duration_ms:
-                    curr_end = next_end 
-                else:
-                    merged.append([curr_start, curr_end]) 
-                    curr_start, curr_end = next_start, next_end
+def _post_punc(raw_text: str) -> str:
+    """对拼接（已剥标点）的全文跑一次 PUNC 标点模型，返回带标点文本。"""
+    if PUNC_MODEL is not None and raw_text.strip():
+        try:
+            punc_out = PUNC_MODEL.generate(input=raw_text)
+            if punc_out and len(punc_out) > 0:
+                raw_text = punc_out[0].get('text', raw_text)
+        except Exception as punc_err:
+            logger.error(f"标点符号后处理失败: {punc_err}")
+    return raw_text
+
+
+# ===== HANDOFF §4: 三态 VAD 策略 + 引擎自动路由 + 廉价 trim =====
+SHORT_AUDIO_MS = 5000           # 短音频阈值(ms)：<= 此值走廉价 trim 直解
+SHORT_TRIM_TOP_DB = 40          # librosa.effects.trim 的 top_db（保留轻语音）
+TRIM_PAD_MS = 100               # trim 边界缓冲(ms)，防削字
+TORCH_MODEL_DIR = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall"
+
+# PyTorch-GPU 引擎惰性加载（锁内构建，保证集成测试启动不超时）
+_TORCH_LOCK = threading.Lock()
+TORCH_MODEL = None
+
+_LABEL_RE = re.compile(r"<\|.*?\|>")
+
+
+def _get_torch_model():
+    """在锁内惰性构建 PyTorch-GPU 引擎；首次调用才加载模型权重。"""
+    global TORCH_MODEL
+    with _TORCH_LOCK:
+        if TORCH_MODEL is None:
+            TORCH_MODEL = PyTorchSenseVoice(model_dir=TORCH_MODEL_DIR, device="cuda")
+        return TORCH_MODEL
+
+
+def _select_engine(engine_override, duration_ms):
+    """引擎路由：cpu->sherpa；gpu->torch；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
+    if engine_override == "cpu":
+        return "sherpa"
+    if engine_override == "gpu":
+        return "torch"
+    if torch.cuda.is_available() and (duration_ms is not None and duration_ms > SHORT_AUDIO_MS):
+        return "torch"
+    return "sherpa"
+
+
+def _use_vad(vad_strategy, duration_ms):
+    """VAD 三态：always->True；never->False；auto->长音频(>SHORT_AUDIO_MS)才 VAD。"""
+    if vad_strategy == "always":
+        return True
+    if vad_strategy == "never":
+        return False
+    return duration_ms is not None and duration_ms > SHORT_AUDIO_MS
+
+
+def _cheap_trim(audio_path, top_db=SHORT_TRIM_TOP_DB, pad_ms=TRIM_PAD_MS):
+    """廉价 trim：用 librosa.effects.trim 切首尾静音，不加载任何模型。
+
+    返回 (trimmed_16k_waveform, full_duration_ms)。
+    """
+    import librosa
+
+    y, sr = librosa.load(audio_path, sr=16000)
+    y_trim, (i0, i1) = librosa.effects.trim(y, top_db=top_db)
+    pad = int(pad_ms / 1000 * sr)
+    y_trim = y[max(0, i0 - pad): min(len(y), i1 + pad)]
+    return (y_trim, len(y) / sr * 1000)
+
+
+def _clean(t):
+    """剥 <|...|> 标签 + 剥原生标点（保留 ITN 数字），返回清洗字符串。"""
+    t = _LABEL_RE.sub("", t).strip()
+    t = strip_punctuation(t)
+    return t
+
+
+def _decode(engine_key, waveforms):
+    """按引擎解码；torch 分支失败自动回退 Sherpa，保证端点始终返回文本。"""
+    if engine_key == "torch":
+        try:
+            return _get_torch_model()(waveforms)
+        except Exception as e:
+            logger.warning(f"PyTorch 推理失败，回退 Sherpa-CPU: {e}")
+            return MODEL(waveforms)
+    return MODEL(waveforms)
+
+
+def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
+    """合并相邻 VAD 段：间隔 < max_gap_ms 且合并后 < max_duration_ms 则合并。"""
+    if not segments:
+        return []
+    merged = []
+    curr_start, curr_end = segments[0]
+    for next_start, next_end in segments[1:]:
+        gap = next_start - curr_end
+        duration = (curr_end - curr_start) + (next_end - next_start)
+        if gap < max_gap_ms and duration < max_duration_ms:
+            curr_end = next_end
+        else:
             merged.append([curr_start, curr_end])
-            return merged
-            
+            curr_start, curr_end = next_start, next_end
+    merged.append([curr_start, curr_end])
+    return merged
+
+
+def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None):
+    """同步推理逻辑（在独立线程运行）。
+
+    - 根据 vad_strategy 决定走廉价 trim 直解还是完整 FSMN VAD 切分
+    - 根据 engine 覆盖 / 自动路由选择 Sherpa-CPU 或 PyTorch-GPU
+    返回 (text, engine_key)
+    """
+    import librosa
+
+    y, sr = librosa.load(audio_path, sr=16000)
+    duration_ms = len(y) / sr * 1000
+
+    engine_key = _select_engine(engine, duration_ms)
+    use_vad = _use_vad(vad_strategy, duration_ms)
+
+    if not use_vad:
+        # 廉价 trim 直解（防幻觉最低保障，不跑完整 VAD）
+        y_trim, _ = _cheap_trim(audio_path)
+        waveforms = [y_trim]
+    else:
+        # 完整 FSMN VAD 切分
+        vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
+        raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
+
         opt_segs = _merge_vad_segments(raw_segs)
-        
-        # 3. 收集所有音频切片，打包准备批量输入
+
         chunks = []
         for start_ms, end_ms in opt_segs:
             s_idx = int(start_ms * 16)
             e_idx = int(end_ms * 16)
-            chunk = audio[max(0, s_idx-800):min(len(audio), e_idx+800)]
-            if len(chunk) < 1600: continue
+            chunk = y[max(0, s_idx - 800): min(len(y), e_idx + 800)]
+            if len(chunk) < 1600:
+                continue
             chunks.append(chunk)
-            
-        if not chunks:
-            return ""
-            
-        # 一次性调用 ASR 模型并行处理整个批次
-        texts = MODEL(chunks)
-        
-        clean_texts = []
-        for t in texts:
-            clean = re.sub(r"<\|.*?\|>", "", t).strip()
-            if clean:
-                clean_texts.append(clean)
-                
-        raw_text = "\n".join(clean_texts)
-        
-        # 4. 后处理加回标点符号
-        if PUNC_MODEL is not None and raw_text.strip():
-            try:
-                punc_out = PUNC_MODEL.generate(input=raw_text)
-                if punc_out and len(punc_out) > 0:
-                    raw_text = punc_out[0].get('text', raw_text)
-            except Exception as punc_err:
-                logger.error(f"标点符号后处理失败: {punc_err}")
-                
-        return raw_text
+        waveforms = chunks
+
+    if not waveforms:
+        return ("", engine_key)
+
+    texts = _decode(engine_key, waveforms)
+    clean_texts = [_clean(t) for t in texts]
+    clean_texts = [t for t in clean_texts if t]
+    raw_text = "\n".join(clean_texts)
+
+    # 对拼接全文跑一次 PUNC（整句上下文，断句最准）
+    return (_post_punc(raw_text), engine_key)
 
 @app.post("/transcribe")
 async def transcribe(
-    request: Request, 
-    file: UploadFile = File(...), 
-    vad_split: bool = Form(True)  # 接收 Form 参数决定是否开启 VAD
+    request: Request,
+    file: UploadFile = File(...),
+    vad_strategy: str = Form("auto"),
+    engine: str = Form(None),
 ):
     if MODEL is None or VAD_MODEL is None or PUNC_MODEL is None:
         raise HTTPException(status_code=503, detail="模型未初始化完毕")
-        
+
     # 1. 安全校验：检查文件大小
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="上传文件过大，限制 50MB 以内")
-        
+
     start_time = time.time()
     suffix = os.path.splitext(file.filename)[1] or ".wav"
     temp_path = None
-    
+
     try:
         # 2. 将临时文件生命周期托管于 try 块内
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_path = temp_file.name
             content = await file.read()
-            # 异步化同步写入操作
             await asyncio.to_thread(temp_file.write, content)
-            
+
         # 3. 校验写入的文件大小
         if os.path.getsize(temp_path) > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="文件内容超过 50MB 限制")
-            
+
         # 4. 并发限制控制与模型推理
         async with GPU_SEMAPHORE:
-            text = await asyncio.to_thread(_run_inference, temp_path, vad_split)
-            
+            text, engine_key = await asyncio.to_thread(_run_inference, temp_path, vad_strategy, engine)
+
         latency = (time.time() - start_time) * 1000
-        logger.info(f"音频转写完成 (VAD={vad_split})，耗时: {latency:.2f} ms")
-        return {"text": text, "latency_ms": latency}
+        logger.info(f"音频转写完成 (vad_strategy={vad_strategy}, engine={engine_key})，耗时: {latency:.2f} ms")
+        return {"text": text, "latency_ms": latency, "engine": engine_key}
+
         
     except HTTPException as he:
         raise he
