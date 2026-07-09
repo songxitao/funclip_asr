@@ -45,6 +45,8 @@ import uvicorn
 import torch
 torch.set_num_threads(6)
 
+from openvino import Core
+
 # 添加 SenseVoiceSmall 目录到 PYTHONPATH
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
 from utils.model_bin import SenseVoiceSmallONNX
@@ -52,11 +54,44 @@ from utils.model_bin import SenseVoiceSmallONNX
 class SenseVoiceSmall(SenseVoiceSmallONNX):
     """包装类，重写了初始化和调用，适配用户要求的接口"""
     def __init__(self, model_dir, batch_size=1, quantize=True, device_id="-1", intra_op_num_threads=4, **kwargs):
-        super().__init__(model_dir, batch_size=batch_size, device_id=device_id, quantize=quantize, intra_op_num_threads=intra_op_num_threads, **kwargs)
+        from utils.infer_utils import CharTokenizer, read_yaml
+        from utils.frontend import WavFrontend
+
+        if quantize:
+            model_file = os.path.join(model_dir, "model_quant.onnx")
+        else:
+            model_file = os.path.join(model_dir, "model.onnx")
+
+        config_file = os.path.join(model_dir, "config.yaml")
+        cmvn_file = os.path.join(model_dir, "am.mvn")
+        config = read_yaml(config_file)
+
+        self.tokenizer = CharTokenizer()
+        config["frontend_conf"]['cmvn_file'] = cmvn_file
+        self.frontend = WavFrontend(**config["frontend_conf"])
+        
+        self.core = Core()
+        ov_model = self.core.read_model(model_file)
+        self.compiled_model = self.core.compile_model(
+            ov_model, 
+            "CPU", 
+            config={
+                "INFERENCE_NUM_THREADS": str(intra_op_num_threads),
+                "NUM_STREAMS": "1"
+            }
+        )
+        
+        self.batch_size = batch_size
+        self.blank_id = 0
+        
         # 加载 tokens.json 以还原文本
         tokens_path = os.path.join(model_dir, "tokens.json")
         with open(tokens_path, "r", encoding="utf-8") as f:
             self.tokens = json.load(f)
+
+    def infer(self, feats, feats_len, language, textnorm):
+        res = self.compiled_model([feats, feats_len, language, textnorm])
+        return res[0], res[1]
 
     def load_data(self, wav_content, fs=None):
         import numpy as np
