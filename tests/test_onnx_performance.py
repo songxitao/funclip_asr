@@ -1,144 +1,142 @@
 import os
-# 1. 在最顶层设置环境变量，严格限制 CPU 线程池大小
-os.environ["OMP_NUM_THREADS"] = "4"
-os.environ["MKL_NUM_THREADS"] = "4"
-os.environ["OPENBLAS_NUM_THREADS"] = "4"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
-os.environ["NUMEXPR_NUM_THREADS"] = "4"
-
 import sys
+import numpy as np
+
+# 1. 动态添加 DLL 搜索目录和修改 PATH 以点亮 onnxruntime 推理
+capi_path = r"E:\conda\envs\asr_ui_env\Lib\site-packages\onnxruntime\capi"
+torch_lib = r"E:\conda\envs\asr_ui_env\Lib\site-packages\torch\lib"
+os.environ["PATH"] = capi_path + os.pathsep + torch_lib + os.pathsep + os.environ["PATH"]
+
+for path in [capi_path, torch_lib]:
+    if os.path.exists(path):
+        try:
+            os.add_dll_directory(path)
+        except Exception:
+            pass
+
+# 2. 限制线程数环境变量
+os.environ["OMP_NUM_THREADS"] = "6"
+os.environ["MKL_NUM_THREADS"] = "6"
+os.environ["OPENBLAS_NUM_THREADS"] = "6"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "6"
+os.environ["NUMEXPR_NUM_THREADS"] = "6"
+
 import json
 import time
-import pytest
-
-# 2. 导入 torch 之后，立刻限制 PyTorch CPU 线程
 import torch
-torch.set_num_threads(4)
+torch.set_num_threads(6)
 
-# 导入 ONNX 运行时，检测 GPU 是否可用
-import onnxruntime as ort
-
-# 添加 SenseVoiceSmall 模型目录到 PYTHONPATH，使得可以导入 utils.model_bin 等
+# 添加项目路径和 SenseVoiceSmall 模型目录到 PYTHONPATH
+sys.path.append(r"E:\project\funclip-pro")
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
-from utils.model_bin import SenseVoiceSmallONNX
 
-class SenseVoiceSmall(SenseVoiceSmallONNX):
-    """包装类，重写了初始化和调用，适配用户要求的接口"""
-    def __init__(self, model_dir, batch_size=1, quantize=True, device_id="-1", intra_op_num_threads=4, **kwargs):
-        super().__init__(model_dir, batch_size=batch_size, device_id=device_id, quantize=quantize, intra_op_num_threads=intra_op_num_threads, **kwargs)
-        # 加载 tokens.json 以还原文本
-        tokens_path = os.path.join(model_dir, "tokens.json")
-        with open(tokens_path, "r", encoding="utf-8") as f:
-            self.tokens = json.load(f)
+# 直接从 asr_onnx_service 导入我们已经重构好的 SenseVoiceSmall 类
+from asr_onnx_service import SenseVoiceSmall
+from funasr import AutoModel
 
-    def __call__(self, wav_content, language=[0], textnorm=[15], tokenizer=None, **kwargs):
-        if tokenizer is None:
-            # 内部默认 Tokenizer
-            class DefaultTokenizer:
-                def __init__(self, tokens):
-                    self.tokens = tokens
-                def tokens2text(self, ids):
-                    res = []
-                    for i in ids:
-                        t = self.tokens[i]
-                        # 过滤掉特殊 tag 像 <|zh|> <|happy|> 等
-                        if t.startswith("<|") and t.endswith("|>"):
-                            continue
-                        if t == "<space>":
-                            res.append(" ")
-                        elif t == "<unk>":
-                            continue
-                        else:
-                            res.append(t)
-                    return "".join(res)
-            tokenizer = DefaultTokenizer(self.tokens)
-        return super().__call__(wav_content, language=language, textnorm=textnorm, tokenizer=tokenizer, **kwargs)
+def run_pipeline(model, vad_model, audio_path, limit_segments=10):
+    """VAD + ASR ONNX 双模 Pipeline 推理函数"""
+    import librosa
+    audio, _ = librosa.load(audio_path, sr=16000)
+    
+    vad_model.model.to("cpu")
+    vad_model.kwargs["device"] = "cpu"
+        
+    vad_out = vad_model.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
+    raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, len(audio)/16*1000]]
+    
+    def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
+        if not segments: return []
+        merged = []
+        curr_start, curr_end = segments[0]
+        for next_start, next_end in segments[1:]:
+            gap = next_start - curr_end
+            duration = (curr_end - curr_start) + (next_end - next_start)
+            if gap < max_gap_ms and duration < max_duration_ms:
+                curr_end = next_end 
+            else:
+                merged.append([curr_start, curr_end]) 
+                curr_start, curr_end = next_start, next_end
+        merged.append([curr_start, curr_end])
+        return merged
+        
+    opt_segs = _merge_vad_segments(raw_segs)
+    
+    # 限制切片数量以大幅加速测试
+    if limit_segments:
+        print(f"限制仅测试前 {limit_segments} 个音频切片")
+        opt_segs = opt_segs[:limit_segments]
+    
+    # 收集音频切片进行批量 ASR 推理
+    chunks = []
+    for start_ms, end_ms in opt_segs:
+        s_idx = int(start_ms * 16)
+        e_idx = int(end_ms * 16)
+        chunk = audio[max(0, s_idx-800):min(len(audio), e_idx+800)]
+        if len(chunk) < 1600: continue
+        chunks.append(chunk)
+        
+    # 直接使用 asr_onnx_service 的批量推理机制进行调用
+    texts = model(chunks)
+    return "\n".join(texts)
+
 
 def test_onnx_performance_comparison():
     audio_path = r"E:\下载\下载\李雪花2.wav"
     model_dir = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall-ONNX"
+    vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
     
     print("\n" + "="*50)
-    print("开始 ASR ONNX 推理性能评测")
+    print("开始 ASR ONNX + FSMN VAD 性能评测与集成测试 (加速版)")
     print("="*50)
     
-    # ---------------- CPU 推理评估 ----------------
+    # ---------------- CPU 环境评测 ----------------
     print("\n[CPU 环境评测]")
     t_start = time.time()
-    # 显式限制线程数为 4
-    model_cpu = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, device_id="-1", intra_op_num_threads=4)
+    # 使用 6 核心物理线程配置
+    model_cpu = SenseVoiceSmall(model_dir, batch_size=16, quantize=True, device_id="-1", intra_op_num_threads=6)
     cpu_load_time = time.time() - t_start
-    print(f"CPU 模型加载时间: {cpu_load_time:.4f} 秒")
+    print(f"CPU ASR 模型加载时间: {cpu_load_time:.4f} 秒")
     
-    # CPU 冷启动转写
     t_start = time.time()
-    res_cpu_cold = model_cpu([audio_path])
+    vad_cpu = AutoModel(model=vad_path, trust_remote_code=True, device="cpu", disable_update=True, disable_pbar=True)
+    cpu_vad_load_time = time.time() - t_start
+    print(f"CPU VAD 模型加载时间: {cpu_vad_load_time:.4f} 秒")
+    
+    # CPU 极速单句模式 (冷/热启动)，使用 5 秒 dummy 音频以极速完成
+    print("--- 轨道一: 极速单句模式 (5秒 Dummy 音频) ---")
+    dummy_wav = np.zeros(16000 * 5, dtype=np.float32)
+    
+    t_start = time.time()
+    res_cpu_cold = model_cpu([dummy_wav])
     cpu_cold_time = time.time() - t_start
-    text_cpu_cold = res_cpu_cold[0] if res_cpu_cold else ""
-    print(f"CPU 首次推理(冷启动)时间: {cpu_cold_time:.4f} 秒")
-    print(f"CPU 首次转写文本: {text_cpu_cold}")
+    print(f"CPU 单句冷启动时间: {cpu_cold_time:.4f} 秒")
     
-    # CPU 热启动转写
     t_start = time.time()
-    res_cpu_hot = model_cpu([audio_path])
+    res_cpu_hot = model_cpu([dummy_wav])
     cpu_hot_time = time.time() - t_start
-    text_cpu_hot = res_cpu_hot[0] if res_cpu_hot else ""
-    print(f"CPU 二次推理(热启动)时间: {cpu_hot_time:.4f} 秒")
-    print(f"CPU 二次转写文本: {text_cpu_hot}")
+    print(f"CPU 单句热启动时间: {cpu_hot_time:.4f} 秒")
     
-    # ---------------- GPU 推理评估 ----------------
-    print("\n[GPU 环境评测]")
+    # CPU VAD+ASR 双模 Pipeline 模式 (冷/热启动)
+    print("--- 轨道二: 双模 Pipeline 模式 (VAD+ASR) ---")
+    t_start = time.time()
+    text_cpu_pipe_cold = run_pipeline(model_cpu, vad_cpu, audio_path, limit_segments=10)
+    cpu_pipe_cold_time = time.time() - t_start
+    print(f"CPU Pipeline 冷启动时间: {cpu_pipe_cold_time:.4f} 秒")
     
-    # 初始化一个临时变量用来检查 GPU 的可用性
-    gpu_available = False
-    try:
-        t_start = time.time()
-        # 尝试加载 GPU 模型
-        model_gpu = SenseVoiceSmall(model_dir, batch_size=1, quantize=True, device_id="0", intra_op_num_threads=4)
-        gpu_load_time = time.time() - t_start
-        
-        # 核心检查：虽然声明了 GPU，但 runtime 可能会静默退回至 CPU。我们必须检查它的 actual provider
-        actual_providers = model_gpu.ort_infer.session.get_providers()
-        print(f"ONNX Session 实际支持的 Providers: {actual_providers}")
-        
-        if "CUDAExecutionProvider" in actual_providers:
-            gpu_available = True
-            print(f"GPU 模型加载时间: {gpu_load_time:.4f} 秒")
-            
-            # GPU 冷启动转写
-            t_start = time.time()
-            res_gpu_cold = model_gpu([audio_path])
-            gpu_cold_time = time.time() - t_start
-            text_gpu_cold = res_gpu_cold[0] if res_gpu_cold else ""
-            print(f"GPU 首次推理(冷启动)时间: {gpu_cold_time:.4f} 秒")
-            print(f"GPU 首次转写文本: {text_gpu_cold}")
-            
-            # GPU 热启动转写
-            t_start = time.time()
-            res_gpu_hot = model_gpu([audio_path])
-            gpu_hot_time = time.time() - t_start
-            text_gpu_hot = res_gpu_hot[0] if res_gpu_hot else ""
-            print(f"GPU 二次推理(热启动)时间: {gpu_hot_time:.4f} 秒")
-            print(f"GPU 二次转写文本: {text_gpu_hot}")
-        else:
-            print("⚠️ 警告: CUDAExecutionProvider 未被 onnxruntime 实际加载 (可能由于 cudnn64_9.dll 丢失等驱动/库不兼容原因)，为了防范 CPU 重复满载计算，将跳过真实 GPU 推理测试。")
-    except Exception as e:
-        print(f"GPU 初始化或加载失败: {e}，跳过 GPU 测试。")
-        
+    t_start = time.time()
+    text_cpu_pipe_hot = run_pipeline(model_cpu, vad_cpu, audio_path, limit_segments=10)
+    cpu_pipe_hot_time = time.time() - t_start
+    print(f"CPU Pipeline 热启动时间: {cpu_pipe_hot_time:.4f} 秒")
+    print(f"CPU Pipeline 转写出的文本片段 (前100字):\n{text_cpu_pipe_hot[:100]}...")
+    
     print("\n" + "="*50)
     print("性能评测总结:")
-    print(f"CPU 加载时间: {cpu_load_time:.4f}s | 冷启动时间: {cpu_cold_time:.4f}s | 热启动时间: {cpu_hot_time:.4f}s")
-    if gpu_available:
-        print(f"GPU 加载时间: {gpu_load_time:.4f}s | 冷启动时间: {gpu_cold_time:.4f}s | 热启动时间: {gpu_hot_time:.4f}s")
-        if gpu_hot_time > 0:
-            speedup = cpu_hot_time / gpu_hot_time
-            print(f"GPU 对比 CPU 热启动提速: {speedup:.2f} 倍")
-    else:
-        print("GPU 推理未被成功点亮，仅使用 CPU 完成基准评估。")
+    print(f"CPU 单句 -> 冷启动: {cpu_cold_time:.4f}s | 热启动: {cpu_hot_time:.4f}s")
+    print(f"CPU Pipeline -> 冷启动: {cpu_pipe_cold_time:.4f}s | 热启动: {cpu_pipe_hot_time:.4f}s")
     print("="*50)
 
 if __name__ == "__main__":
-    # 强制命令行输出 UTF-8 字符防止乱码
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
     test_onnx_performance_comparison()
