@@ -28,6 +28,8 @@ qwen_server/output/
 # Test datasets (6GB+, never track)
 testset/aishell1_test_extracted/
 testset/dia-aishell4-test/
+testset/Test_Ali/
+testset/ali_near_prep/
 
 # Superpowers working dir
 .superpowers/
