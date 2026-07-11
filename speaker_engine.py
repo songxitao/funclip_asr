@@ -226,3 +226,83 @@ class CampPlusSpeaker:
         for idx, seg_idx in enumerate(valid):
             result[seg_idx] = int(labels[idx]) + 1
         return result
+
+    def cluster_sliding(self, audio_16k, sr=16000, strategy="spectral",
+                        n_speakers=None, win_sec=1.5, step_sec=0.5):
+        """整段音频滑窗 segmentation + 聚类 + 合并相邻同人窗。
+
+        与 cluster() 的区别：不用外部传入的 VAD 段，内部按固定窗滑切。
+        Cam++ 提向量和 spectral 聚类逻辑复用 cluster() 的实现。
+
+        Args:
+            audio_16k: 1D numpy，整段 16k 音频
+            sr: 采样率（默认 16000）
+            strategy: 聚类策略（默认 spectral，复用现有）
+            n_speakers: oracle-K；None 则自动估
+            win_sec: 窗长秒（默认 1.5）
+            step_sec: 步长秒（默认 0.5）
+        Returns:
+            list of (start_sec, end_sec, speaker_id)，合并后的说话人段
+        """
+        windows = segment_sliding_window(audio_16k, sr, win_sec, step_sec)
+        if not windows:
+            return []
+        # 逐窗提 embedding
+        embeddings = []
+        valid_idx = []
+        for i, (st, en, samp) in enumerate(windows):
+            emb = self.extract_embedding(samp)
+            if emb is not None:
+                embeddings.append(emb)
+                valid_idx.append(i)
+        if not embeddings:
+            # 全失败，整段标 1
+            return [(windows[0][0], windows[-1][1], 1)]
+        emb_matrix = np.vstack(embeddings)
+        # 聚类（复用 spectral 逻辑）
+        n = len(embeddings)
+        if n_speakers is not None:
+            n_clusters = n_speakers
+        else:
+            n_clusters = max(2, min(20, n // 10))
+        n_clusters = min(n_clusters, n - 1, 20)
+        if n_clusters < 1:
+            n_clusters = 1
+        if n_clusters == 1 or n <= 1:
+            labels = np.zeros(n, dtype=int)
+        else:
+            sc = SpectralClustering(
+                n_clusters=n_clusters,
+                affinity='nearest_neighbors',
+                n_neighbors=min(10, n - 1),
+                assign_labels='kmeans',
+                random_state=42,
+            )
+            labels = sc.fit_predict(emb_matrix)
+        # 每窗贴标签（speaker_id 从 1 起）
+        win_labels = [None] * len(windows)
+        for i, lab in zip(valid_idx, labels):
+            win_labels[i] = int(lab) + 1
+        # 无效窗用前一个有效标签填充（首窗无效用 1）
+        last_valid = 1
+        for i in range(len(win_labels)):
+            if win_labels[i] is None:
+                win_labels[i] = last_valid
+            else:
+                last_valid = win_labels[i]
+        # 合并相邻同人窗
+        merged = []
+        cur_spk = win_labels[0]
+        cur_start = windows[0][0]
+        cur_end = windows[0][1]
+        for i in range(1, len(windows)):
+            st, en, _ = windows[i]
+            if win_labels[i] == cur_spk:
+                cur_end = en
+            else:
+                merged.append((cur_start, cur_end, cur_spk))
+                cur_spk = win_labels[i]
+                cur_start = st
+                cur_end = en
+        merged.append((cur_start, cur_end, cur_spk))
+        return merged
