@@ -20,8 +20,8 @@ info:
     返回带标点符号的中文文本。
   version: "1.0.0"
 servers:
-  - url: http://localhost:8002
-    description: 本地 ASR 服务（默认端口 8002）
+  - url: http://host.docker.internal:8002
+    description: 本地 ASR 服务（Dify 容器访问专用）
 paths:
   /transcribe:
     post:
@@ -60,6 +60,13 @@ paths:
                   description: >-
                     可选。VAD 策略：auto=短音频廉价trim直解、长音频完整FSMN VAD；
                     always=永远FSMN VAD；never=不做VAD切分（仍做廉价trim）。
+                response_format:
+                  type: string
+                  enum:
+                    - json
+                    - text
+                  default: text
+                  description: 可选。返回格式：json=完整结构化JSON（含耗时和引擎），text=只返回识别出的干净纯文本。默认为 text。
               required:
                 - file
       responses:
