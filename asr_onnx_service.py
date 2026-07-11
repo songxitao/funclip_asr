@@ -444,18 +444,33 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
     diarized_text = ""
     if diarize and chunks:
         try:
-            spk_cache = _get_spk_model().cluster(
-                chunks, strategy=diarize_strategy, seg_times=seg_meta, n_speakers=num_speakers
-            )
-            for i, (start_ms, end_ms) in enumerate(seg_meta):
-                spk = spk_cache.get(i, "?")
-                seg_text = clean_texts[i] if i < len(clean_texts) else ""
-                segments.append({
-                    "start": start_ms,
-                    "end": end_ms,
-                    "speaker": spk,
-                    "text": seg_text,
-                })
+            if diarize_strategy == "sliding":
+                # 滑窗说话人分离：整段音频内部固定窗滑切，逐窗提 Cam++ 向量，
+                # 复用 spectral 聚类并合并相邻同人窗。VAD 段仅服务 ASR，不参与分人。
+                merged = _get_spk_model().cluster_sliding(
+                    y, sr=16000, strategy="spectral",
+                    n_speakers=num_speakers, win_sec=1.5, step_sec=0.5,
+                )
+                for st, en, spk in merged:
+                    segments.append({
+                        "start": int(st * 1000),
+                        "end": int(en * 1000),
+                        "speaker": str(spk),
+                        "text": "",
+                    })
+            else:
+                spk_cache = _get_spk_model().cluster(
+                    chunks, strategy=diarize_strategy, seg_times=seg_meta, n_speakers=num_speakers
+                )
+                for i, (start_ms, end_ms) in enumerate(seg_meta):
+                    spk = spk_cache.get(i, "?")
+                    seg_text = clean_texts[i] if i < len(clean_texts) else ""
+                    segments.append({
+                        "start": start_ms,
+                        "end": end_ms,
+                        "speaker": spk,
+                        "text": seg_text,
+                    })
             diarized_text = "\n".join(
                 f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"]
             )
