@@ -13,7 +13,7 @@ PREP = Path(r"E:\project\funclip-pro\testset\ali_near_prep")
 URL = "http://localhost:8002/transcribe"
 
 
-def eval_one(session):
+def eval_one(session, strategy="spectral"):
     mixed_wav = PREP / f"{session}_mixed.wav"
     rttm_path = PREP / f"{session}.rttm"
     if not mixed_wav.exists():
@@ -36,7 +36,7 @@ def eval_one(session):
         resp = requests.post(URL,
             files={"file": (flac.name, f, "audio/flac")},
             data={"diarize": "true", "num_speakers": str(n_spk),
-                  "vad_strategy": "always", "diarize_strategy": "spectral"},
+                  "vad_strategy": "always", "diarize_strategy": strategy},
             timeout=3600)
     latency = time.time() - t0
     if resp.status_code != 200:
