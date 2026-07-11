@@ -24,3 +24,13 @@ recordings/
 temp_task_list.txt
 temp_task_list_offline.txt
 qwen_server/output/
+
+# Test datasets (6GB+, never track)
+testset/aishell1_test_extracted/
+testset/dia-aishell4-test/
+
+# Superpowers working dir
+.superpowers/
+
+# Test results binaries (keep json/jsonl, ignore raw logs)
+test_results/*.log
