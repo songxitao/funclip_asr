@@ -75,4 +75,5 @@ def eval_one(session, strategy="spectral"):
 
 if __name__ == "__main__":
     session = sys.argv[1] if len(sys.argv) > 1 else "R8002_M8002"
-    eval_one(session)
+    strategy = sys.argv[2] if len(sys.argv) > 2 else "spectral"
+    eval_one(session, strategy)
