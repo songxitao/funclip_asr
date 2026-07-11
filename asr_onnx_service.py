@@ -59,6 +59,7 @@ from utils.model_bin import SenseVoiceSmallONNX
 
 from sherpa_engine import SherpaSenseVoice
 from torch_engine import PyTorchSenseVoice
+from speaker_engine import CampPlusSpeaker
 
 class SenseVoiceSmall(SenseVoiceSmallONNX):
     """包装类，重写了初始化和调用，适配用户要求的接口"""
@@ -212,7 +213,7 @@ def load_models():
     vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
     punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
     
-    logger.info("正在加载 Sherpa-ONNX ASR 模型、CPU VAD 模型和 CPU 标点模型...")
+    logger.info("正在加载 Sherpa-ONNX ASR 模型、VAD(优先GPU) 和 CPU 标点模型...")
     try:
         # 1. 加载 ASR（Sherpa-ONNX INT8 后端，CPU 终极提速方案，已评测验证）
         SHERPA_MODEL_DIR = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmallOnnx"
@@ -221,16 +222,29 @@ def load_models():
             num_threads=6,
             use_itn=True,
         )
-        # 2. 加载 VAD
-        VAD_MODEL = AutoModel(
-            model=vad_path,
-            trust_remote_code=True,
-            device="cpu",
-            disable_update=True,
-            disable_pbar=True
-        )
-        VAD_MODEL.model.to("cpu")
-        VAD_MODEL.kwargs["device"] = "cpu"
+        # 2. 加载 VAD（优先 CUDA，失败回退 CPU —— 提速 DER 的 VAD 切分）
+        try:
+            VAD_MODEL = AutoModel(
+                model=vad_path,
+                trust_remote_code=True,
+                device="cuda",
+                disable_update=True,
+                disable_pbar=True
+            )
+            VAD_MODEL.model.to("cuda")
+            VAD_MODEL.kwargs["device"] = "cuda"
+            logger.info("VAD 模型已加载到 CUDA")
+        except Exception as _ve:
+            logger.warning(f"VAD CUDA 加载失败，回退 CPU: {_ve}")
+            VAD_MODEL = AutoModel(
+                model=vad_path,
+                trust_remote_code=True,
+                device="cpu",
+                disable_update=True,
+                disable_pbar=True
+            )
+            VAD_MODEL.model.to("cpu")
+            VAD_MODEL.kwargs["device"] = "cpu"
         
         # 3. 加载 PUNC 标点模型
         PUNC_MODEL = AutoModel(
@@ -280,6 +294,25 @@ def _get_torch_model():
         if TORCH_MODEL is None:
             TORCH_MODEL = PyTorchSenseVoice(model_dir=TORCH_MODEL_DIR, device="cuda")
         return TORCH_MODEL
+
+
+# Cam++ 说话人模型惰性加载（仅在 diarize=True 时触发；优先 CUDA 提速，失败回退 CPU）
+_SPK_LOCK = threading.Lock()
+SPK_MODEL = None
+SPK_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\speech_campplus_sv_zh-cn_16k-common"
+
+def _get_spk_model():
+    """在锁内惰性构建 Cam++ 说话人模型；首次 diarize 请求才加载。优先 CUDA。"""
+    global SPK_MODEL
+    with _SPK_LOCK:
+        if SPK_MODEL is None:
+            try:
+                SPK_MODEL = CampPlusSpeaker(model_dir=SPK_MODEL_DIR, device="cuda")
+                logger.info("[Speaker] Cam++ 已加载到 CUDA")
+            except Exception as e:
+                logger.warning(f"[Speaker] Cam++ CUDA 加载失败，回退 CPU: {e}")
+                SPK_MODEL = CampPlusSpeaker(model_dir=SPK_MODEL_DIR, device="cpu")
+        return SPK_MODEL
 
 
 def _select_engine(engine_override, duration_ms):
@@ -352,12 +385,15 @@ def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
     return merged
 
 
-def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None):
+def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, diarize: bool = False,
+                   diarize_strategy: str = "two_stage", num_speakers: int = None):
     """同步推理逻辑（在独立线程运行）。
 
     - 根据 vad_strategy 决定走廉价 trim 直解还是完整 FSMN VAD 切分
     - 根据 engine 覆盖 / 自动路由选择 Sherpa-CPU 或 PyTorch-GPU
-    返回 (text, engine_key)
+    - diarize=True 时先做 VAD 切分，对片段离线聚类，产出段级 [说话人] 标注
+    - diarize_strategy: "single" | "two_stage"(默认) | "spectral" — 聚类策略
+    返回 (text, engine_key, segments, diarized_text)
     """
     import librosa
 
@@ -366,6 +402,10 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None):
 
     engine_key = _select_engine(engine, duration_ms)
     use_vad = _use_vad(vad_strategy, duration_ms)
+
+    # 说话人分离要求先做语音切分
+    if diarize:
+        use_vad = True
 
     if not use_vad:
         # 廉价 trim 直解（防幻觉最低保障，不跑完整 VAD）
@@ -379,6 +419,7 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None):
         opt_segs = _merge_vad_segments(raw_segs)
 
         chunks = []
+        seg_meta = []   # 与 chunks 一一对应的 (start_ms, end_ms)，用于段级标注
         for start_ms, end_ms in opt_segs:
             s_idx = int(start_ms * 16)
             e_idx = int(end_ms * 16)
@@ -386,18 +427,42 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None):
             if len(chunk) < 1600:
                 continue
             chunks.append(chunk)
+            seg_meta.append((start_ms, end_ms))
         waveforms = chunks
 
     if not waveforms:
-        return ("", engine_key)
+        return ("", engine_key, [], "")
 
     texts = _decode(engine_key, waveforms)
-    clean_texts = [_clean(t) for t in texts]
-    clean_texts = [t for t in clean_texts if t]
-    raw_text = "\n".join(clean_texts)
+    clean_texts = [_clean(t) for t in texts]   # 与 chunks 一一对齐
+    # 全文拼接（向后兼容）：过滤空串后跑一次 PUNC（整句上下文，断句最准）
+    joined = "\n".join([t for t in clean_texts if t])
+    raw_text = _post_punc(joined)
 
-    # 对拼接全文跑一次 PUNC（整句上下文，断句最准）
-    return (_post_punc(raw_text), engine_key)
+    # 说话人分离：对切分片段做离线聚类，产出段级 [说话人] 标注
+    segments = []
+    diarized_text = ""
+    if diarize and chunks:
+        try:
+            spk_cache = _get_spk_model().cluster(
+                chunks, strategy=diarize_strategy, seg_times=seg_meta, n_speakers=num_speakers
+            )
+            for i, (start_ms, end_ms) in enumerate(seg_meta):
+                spk = spk_cache.get(i, "?")
+                seg_text = clean_texts[i] if i < len(clean_texts) else ""
+                segments.append({
+                    "start": start_ms,
+                    "end": end_ms,
+                    "speaker": spk,
+                    "text": seg_text,
+                })
+            diarized_text = "\n".join(
+                f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"]
+            )
+        except Exception as spk_err:
+            logger.error(f"说话人分离失败，退回无标注: {spk_err}", exc_info=True)
+
+    return (raw_text, engine_key, segments, diarized_text)
 
 @app.post("/transcribe")
 async def transcribe(
@@ -405,6 +470,10 @@ async def transcribe(
     file: UploadFile = File(...),
     vad_strategy: str = Form("auto"),
     engine: str = Form(None),
+    diarize: bool = Form(False),
+    diarize_strategy: str = Form("two_stage"),
+    num_speakers: int = Form(None),
+    response_format: str = Form("json"),
 ):
     if MODEL is None or VAD_MODEL is None or PUNC_MODEL is None:
         raise HTTPException(status_code=503, detail="模型未初始化完毕")
@@ -431,11 +500,21 @@ async def transcribe(
 
         # 4. 并发限制控制与模型推理
         async with GPU_SEMAPHORE:
-            text, engine_key = await asyncio.to_thread(_run_inference, temp_path, vad_strategy, engine)
+            text, engine_key, segments, diarized_text = await asyncio.to_thread(
+                _run_inference, temp_path, vad_strategy, engine, diarize, diarize_strategy, num_speakers
+            )
 
         latency = (time.time() - start_time) * 1000
-        logger.info(f"音频转写完成 (vad_strategy={vad_strategy}, engine={engine_key})，耗时: {latency:.2f} ms")
-        return {"text": text, "latency_ms": latency, "engine": engine_key}
+        logger.info(f"音频转写完成 (vad_strategy={vad_strategy}, engine={engine_key}, diarize={diarize})，耗时: {latency:.2f} ms")
+        
+        if response_format == "text":
+            from fastapi.responses import PlainTextResponse
+            return PlainTextResponse(diarized_text if diarize and diarized_text else text)
+
+        resp = {"text": text, "latency_ms": latency, "engine": engine_key, "segments": segments}
+        if diarize:
+            resp["diarized_text"] = diarized_text
+        return resp
 
         
     except HTTPException as he:
@@ -453,4 +532,4 @@ async def transcribe(
                 logger.error(f"清理临时文件失败 {temp_path}: {e}")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8002)
+    uvicorn.run(app, host="0.0.0.0", port=8002)
