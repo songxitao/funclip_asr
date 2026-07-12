@@ -1,38 +1,31 @@
-# Dify 自定义工具 OpenAPI Schema —— funclip-pro ASR 微服务
+# Dify 自定义工具 OpenAPI Schema —— funclip-pro ASR & 说话人分离微服务
 #
 # 用途：在 Dify 的「工具 → 自定义工具」中直接导入本文件，即可获得一个
-#       `POST /transcribe` 的 ASR 工具节点。节点只需「丢音频、取 text」，
-#       引擎选择（Sherpa-CPU / PyTorch-GPU）与 VAD 策略由服务端自动路由，
-#       不要在 Dify 侧做资源调度决策（详见 HANDOFF.md §2.2）。
+#       `POST /transcribe` 的 ASR + 说话人分离工具节点。
 #
 # 导入方式：
 #   1. Dify 控制台 → 工具 → 自定义工具 → 创建 → 选「OpenAPI Schema」
 #   2. 把本文件内容整段粘贴进去（或上传本文件）
-#   3. 保存后，编排里即可调用，输入 `file`(音频二进制)，
-#      可选 `engine`(gpu/cpu) 与 `vad_strategy`(auto/always/never)
-#   4. 输出取 `body.text`（带标点符号的中文文本）
+#   3. 保存后，在工作流/编排中即可调用。
+#   4. Dify 容器访问本地服务的 URL 默认为：http://host.docker.internal:8002
+#
 openapi: 3.0.0
 info:
-  title: funclip-pro ASR 转写服务
+  title: funclip-pro ASR & 说话人分离服务
   description: >-
-    基于 SenseVoiceSmall 的实时语音转写微服务。支持 Sherpa-ONNX(CPU) 与
-    PyTorch(GPU) 双引擎自动路由，以及 auto/always/never 三态 VAD 策略。
-    返回带标点符号的中文文本。
-  version: "1.0.0"
+    基于 SenseVoiceSmall 的语音转转写微服务，集成了 pyannote/segmentation-3.0 与 Cam++ 说话人角色对齐。
+    支持自动路由引擎与三种 VAD 策略，支持分人角色文本生成。
+  version: "1.1.0"
 servers:
   - url: http://host.docker.internal:8002
-    description: 本地 ASR 服务（Dify 容器访问专用）
+    description: 本地 ASR 与说话人服务（Dify 容器访问专用）
 paths:
   /transcribe:
     post:
       operationId: transcribe
-      summary: 语音转写
+      summary: 语音识别与说话人分离对齐
       description: >-
-        接收一段音频（multipart/form-data），返回带标点符号的转写文本。
-        - file：音频文件（wav/mp3 等），必填
-        - engine：可选，强制指定后端；gpu=PyTorch-GPU，cpu=Sherpa-CPU；不传则自动路由
-        - vad_strategy：可选，VAD 策略；auto(默认)=短音频trim直解/长音频FSMN切分，
-          always=永远FSMN VAD，never=不做VAD切分（仍做廉价trim防幻觉）
+        接收音频文件，返回识别出的带标点的文本或进行说话人角色对齐的转写段落。
       requestBody:
         required: true
         content:
@@ -43,7 +36,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: 音频文件（二进制）
+                  description: 音频文件（wav/mp3/flac等二进制文件），必填
                 engine:
                   type: string
                   enum:
@@ -59,19 +52,41 @@ paths:
                   default: auto
                   description: >-
                     可选。VAD 策略：auto=短音频廉价trim直解、长音频完整FSMN VAD；
-                    always=永远FSMN VAD；never=不做VAD切分（仍做廉价trim）。
+                    always=永远FSMN VAD；never=不做VAD切分。
+                diarize:
+                  type: string
+                  enum:
+                    - "true"
+                    - "false"
+                  default: "false"
+                  description: 可选。是否开启说话人角色分离。
+                diarize_strategy:
+                  type: string
+                  enum:
+                    - single
+                    - two_stage
+                    - spectral
+                    - vad_sliding
+                    - seg_clustering
+                  default: seg_clustering
+                  description: >-
+                    可选。说话人聚类分离策略：seg_clustering(推荐, 错误率最低)，
+                    vad_sliding(滑窗提纯)，spectral(谱聚类)，two_stage(宁拆不混两阶段)。
+                num_speakers:
+                  type: integer
+                  description: 可选。指定该音频中真实的说话人人数（传入该值可让全局聚类极其稳定）。
                 response_format:
                   type: string
                   enum:
                     - json
                     - text
                   default: text
-                  description: 可选。返回格式：json=完整结构化JSON（含耗时和引擎），text=只返回识别出的干净纯文本。默认为 text。
+                  description: 可选。返回格式：json=完整结构化JSON（含segments分段），text=只返回识别出的干净纯文本或分人段文本。默认为 text。
               required:
                 - file
       responses:
         "200":
-          description: 转写成功，返回带标点文本
+          description: 处理成功
           content:
             application/json:
               schema:
@@ -79,18 +94,36 @@ paths:
                 properties:
                   text:
                     type: string
-                    description: 带标点符号的转写文本
+                    description: 识别出的带标点的文本（开启 diarize 时为未分人前全文）
+                  diarized_text:
+                    type: string
+                    description: 开启 diarize 且 response_format=json 时返回的格式化说话人分段文本
                   latency_ms:
                     type: number
                     description: 端到端耗时（毫秒）
                   engine:
                     type: string
                     description: 实际使用的引擎（sherpa / torch）
-                required:
-                  - text
+                  segments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        start:
+                          type: integer
+                          description: 段起点（毫秒）
+                        end:
+                          type: integer
+                          description: 段终点（毫秒）
+                        speaker:
+                          type: string
+                          description: 说话人 ID（从 1 开始）
+                        text:
+                          type: string
+                          description: 该段转写的具体文本
         "413":
           description: 上传文件超过 50MB 限制
         "500":
-          description: 服务端转写失败
+          description: 服务端内部失败
         "503":
           description: 模型尚未初始化完毕
