@@ -54,3 +54,38 @@ def test_run_inference_sliding_returns_speaker_segments():
     assert len(segments) == 2
     assert segments[0]["speaker"] == "1"
     assert segments[1]["speaker"] == "2"
+
+
+def test_run_inference_vad_sliding_returns_speaker_text_segments():
+    import asr_onnx_service as svc
+    # FakeSpk，其中 cluster 返回聚类字典
+    class FakeSpk:
+        def cluster(self, chunks, strategy, **kw):
+            return {0: 1} # 对应第 0 个 VAD 段属于 speaker 1
+    class FakeVAD:
+        def generate(self, **kw):
+            return [{"value": [[0, 3000]]}]
+
+    tmp_path = os.path.join(tempfile.gettempdir(), "vad_sliding_integration_test.wav")
+    with wave.open(tmp_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(array.array("h", [0] * 48000))
+    try:
+        with patch.object(svc, "_get_spk_model", return_value=FakeSpk()), \
+             patch.object(svc, "_decode", return_value=["测试文本"]), \
+             patch.object(svc, "VAD_MODEL", FakeVAD()):
+            _, _, segments, diarized_text = svc._run_inference(
+                tmp_path, vad_strategy="never", diarize=True,
+                diarize_strategy="vad_sliding", num_speakers=2,
+            )
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    assert len(segments) == 1
+    assert segments[0]["speaker"] == "1"
+    assert segments[0]["text"] == "测试文本"
+    assert "[说话人1] 测试文本" in diarized_text
+

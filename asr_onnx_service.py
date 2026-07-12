@@ -463,7 +463,7 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                     chunks, strategy=diarize_strategy, seg_times=seg_meta, n_speakers=num_speakers
                 )
                 for i, (start_ms, end_ms) in enumerate(seg_meta):
-                    spk = spk_cache.get(i, "?")
+                    spk = str(spk_cache.get(i, "?"))
                     seg_text = clean_texts[i] if i < len(clean_texts) else ""
                     segments.append({
                         "start": start_ms,
