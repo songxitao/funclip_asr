@@ -354,3 +354,95 @@ class CampPlusSpeaker:
                 cur_end = en
         merged.append((cur_start, cur_end, cur_spk))
         return merged
+
+    def cluster_with_segmentation(self, audio_16k: np.ndarray, segment_engine,
+                                  sr: int = 16000, n_speakers: Optional[int] = None) -> List[Tuple[float, float, int]]:
+        """整段音频经过 segmentation 切割后聚类，并合并相邻同人段（间隔 < 0.5s）。
+
+        Args:
+            audio_16k: 1D numpy array 格式的完整音频
+            segment_engine: 说话人分割引擎实例，要求实现 process_full_audio 方法
+            sr: 采样率，默认 16000
+            n_speakers: oracle-K 说话人数量
+        Returns:
+            list of (start_sec, end_sec, speaker_id)
+        """
+        # 1. 提取 segmentation 纯净段
+        segs = segment_engine.process_full_audio(audio_16k, sr=sr)
+        if not segs:
+            return []
+
+        # 2. 逐个提取 embedding
+        embeddings = []
+        valid_indices = []
+        for idx, (start, end, seg_audio) in enumerate(segs):
+            emb = self.extract_embedding(seg_audio)
+            if emb is not None:
+                embeddings.append(emb)
+                valid_indices.append(idx)
+
+        # 3. 标签分配与聚类
+        seg_labels = [None] * len(segs)
+        if not embeddings:
+            # 如果全部提取失败，退化为分配同一个默认说话人 1
+            for idx in range(len(segs)):
+                seg_labels[idx] = 1
+        else:
+            # 谱聚类 SpectralClustering
+            emb_matrix = np.vstack(embeddings)
+            n = len(embeddings)
+
+            if n_speakers is not None:
+                n_clusters = n_speakers
+            else:
+                n_clusters = max(2, min(20, n // 10))
+            n_clusters = min(n_clusters, n - 1, 20)
+            if n_clusters < 1:
+                n_clusters = 1
+
+            if n_clusters == 1 or n <= 1:
+                labels = np.zeros(n, dtype=int)
+            else:
+                sc = SpectralClustering(
+                    n_clusters=n_clusters,
+                    affinity='nearest_neighbors',
+                    n_neighbors=min(10, n - 1),
+                    assign_labels='kmeans',
+                    random_state=42,
+                )
+                labels = sc.fit_predict(emb_matrix)
+
+            # 填充有效段的聚类结果（说话人从 1 开始记）
+            for k, idx in enumerate(valid_indices):
+                seg_labels[idx] = int(labels[k]) + 1
+
+            # 前后向填充 None（针对提取失败的短片段），确保没有 None 标签
+            last_valid = 1
+            for lab in seg_labels:
+                if lab is not None:
+                    last_valid = lab
+                    break
+            for idx in range(len(seg_labels)):
+                if seg_labels[idx] is None:
+                    seg_labels[idx] = last_valid
+                else:
+                    last_valid = seg_labels[idx]
+
+        # 4. 合并相邻同人段（间隔 < 0.5s 且同人）
+        processed_segs = []
+        for idx, (start, end, _) in enumerate(segs):
+            processed_segs.append((start, end, seg_labels[idx]))
+
+        merged = []
+        cur_start, cur_end, cur_spk = processed_segs[0]
+        for idx in range(1, len(processed_segs)):
+            st, en, spk = processed_segs[idx]
+            # 相邻且同人且间隔 < 0.5s
+            if spk == cur_spk and (st - cur_end) < 0.5:
+                cur_end = en
+            else:
+                merged.append((cur_start, cur_end, cur_spk))
+                cur_start, cur_end, cur_spk = st, en, spk
+        merged.append((cur_start, cur_end, cur_spk))
+
+        return merged
