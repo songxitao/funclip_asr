@@ -60,6 +60,7 @@ from utils.model_bin import SenseVoiceSmallONNX
 from sherpa_engine import SherpaSenseVoice
 from torch_engine import PyTorchSenseVoice
 from speaker_engine import CampPlusSpeaker
+from segmentation_engine import SegmentationEngine
 
 class SenseVoiceSmall(SenseVoiceSmallONNX):
     """包装类，重写了初始化和调用，适配用户要求的接口"""
@@ -315,6 +316,25 @@ def _get_spk_model():
         return SPK_MODEL
 
 
+# Segmentation-3.0 说话人分割模型惰性加载
+_SEG_LOCK = threading.Lock()
+SEG_MODEL = None
+SEG_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\segmentation-3.0"
+
+def _get_seg_model():
+    """在锁内惰性构建 Segmentation 模型；首次 seg_clustering 请求才加载。优先 CUDA。"""
+    global SEG_MODEL
+    with _SEG_LOCK:
+        if SEG_MODEL is None:
+            try:
+                SEG_MODEL = SegmentationEngine(model_dir=SEG_MODEL_DIR, device="cuda")
+                logger.info("[Segmentation] pyannote/segmentation-3.0 已加载到 CUDA")
+            except Exception as e:
+                logger.warning(f"[Segmentation] pyannote/segmentation-3.0 CUDA 加载失败，回退 CPU: {e}")
+                SEG_MODEL = SegmentationEngine(model_dir=SEG_MODEL_DIR, device="cpu")
+        return SEG_MODEL
+
+
 def _select_engine(engine_override, duration_ms):
     """引擎路由：cpu->sherpa；gpu->torch；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
     if engine_override == "cpu":
@@ -457,6 +477,31 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                         "end": int(en * 1000),
                         "speaker": str(spk),
                         "text": "",
+                    })
+            elif diarize_strategy == "seg_clustering":
+                seg_engine = _get_seg_model()
+                merged = _get_spk_model().cluster_with_segmentation(
+                    y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
+                )
+                for st_sec, en_sec, spk in merged:
+                    seg_start_ms = st_sec * 1000
+                    seg_end_ms = en_sec * 1000
+                    
+                    # 按时间重叠判断回填重合部分的 ASR text
+                    matched_texts = []
+                    for i, (asr_start, asr_end) in enumerate(seg_meta):
+                        overlap = min(seg_end_ms, asr_end) - max(seg_start_ms, asr_start)
+                        if overlap > 0:
+                            asr_text = clean_texts[i] if i < len(clean_texts) else ""
+                            if asr_text.strip():
+                                matched_texts.append(asr_text.strip())
+                    
+                    seg_text = "".join(matched_texts)
+                    segments.append({
+                        "start": int(seg_start_ms),
+                        "end": int(seg_end_ms),
+                        "speaker": str(spk),
+                        "text": seg_text,
                     })
             else:
                 spk_cache = _get_spk_model().cluster(

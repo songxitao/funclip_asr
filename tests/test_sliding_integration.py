@@ -89,3 +89,52 @@ def test_run_inference_vad_sliding_returns_speaker_text_segments():
     assert segments[0]["text"] == "测试文本"
     assert "[说话人1] 测试文本" in diarized_text
 
+
+def test_run_inference_seg_clustering_returns_speaker_text_segments():
+    import asr_onnx_service as svc
+    # FakeSpk，其中 cluster_with_segmentation 返回聚类段 [(start_sec, end_sec, speaker_id)]
+    class FakeSpk:
+        def cluster_with_segmentation(self, audio, segment_engine, sr=16000, n_speakers=None):
+            return [(0.0, 1.5, 1), (1.5, 3.0, 2)]
+
+    class FakeSegEngine:
+        pass
+
+    class FakeVAD:
+        def generate(self, **kw):
+            return [{"value": [[0, 3000]]}]
+
+    tmp_path = os.path.join(tempfile.gettempdir(), "seg_clustering_integration_test.wav")
+    with wave.open(tmp_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(array.array("h", [0] * 48000))
+    try:
+        # Mock _get_spk_model, _get_seg_model, _decode, VAD_MODEL
+        with patch.object(svc, "_get_spk_model", return_value=FakeSpk()), \
+             patch.object(svc, "_get_seg_model", return_value=FakeSegEngine()), \
+             patch.object(svc, "_decode", return_value=["测试文本"]), \
+             patch.object(svc, "VAD_MODEL", FakeVAD()):
+            _, _, segments, diarized_text = svc._run_inference(
+                tmp_path, vad_strategy="never", diarize=True,
+                diarize_strategy="seg_clustering", num_speakers=2,
+            )
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    assert len(segments) == 2
+    assert segments[0]["speaker"] == "1"
+    assert segments[0]["start"] == 0
+    assert segments[0]["end"] == 1500
+    assert segments[0]["text"] == "测试文本"
+
+    assert segments[1]["speaker"] == "2"
+    assert segments[1]["start"] == 1500
+    assert segments[1]["end"] == 3000
+    assert segments[1]["text"] == "测试文本"
+
+    assert "[说话人1] 测试文本" in diarized_text
+    assert "[说话人2] 测试文本" in diarized_text
+
