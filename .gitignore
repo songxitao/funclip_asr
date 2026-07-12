@@ -12,6 +12,7 @@ env/
 # Custom Configs
 config.json
 ONBOARDING_MEMO.md
+ONBOARDING_MANUAL.md
 
 # Project outputs & temp files
 output/
