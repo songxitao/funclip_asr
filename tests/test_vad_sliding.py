@@ -92,3 +92,21 @@ def test_extract_embedding_sliding_mean_tensor_compat():
         emb = speaker.extract_embedding_sliding_mean(tensor_audio, sr=sr)
         assert emb is not None
         np.testing.assert_array_almost_equal(emb, np.array([1.0, 0.0]), decimal=5)
+
+
+def test_cluster_vad_sliding():
+    with patch('funasr.AutoModel') as mock_auto:
+        speaker = CampPlusSpeaker(model_dir="mock_dir", device="cpu")
+        chunks = [np.random.randn(32000), np.random.randn(48000), np.random.randn(32000)]
+        mock_mean_embs = [
+            np.array([1.0, 0.0]),
+            np.array([0.9, 0.1]),
+            np.array([0.0, 1.0])
+        ]
+        speaker.extract_embedding_sliding_mean = MagicMock(side_effect=mock_mean_embs)
+        result = speaker.cluster(chunks, strategy="vad_sliding", n_speakers=2)
+        assert len(result) == 3
+        assert result[0] == result[1]
+        assert result[0] != result[2]
+        assert result[0] in [1, 2]
+

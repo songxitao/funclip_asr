@@ -213,7 +213,16 @@ class CampPlusSpeaker:
           + kmeans 标签分配；n_speakers 给定时 oracle-K，否则自动估 K。
         n_speakers 给定时，所有策略都退化为 oracle-K（最稳，无需猜阈值）。
         """
-        embeddings, valid = self._extract_all(audio_chunks)
+        if strategy == "vad_sliding":
+            embeddings = []
+            valid = []
+            for i, chunk in enumerate(audio_chunks):
+                emb = self.extract_embedding_sliding_mean(chunk)
+                if emb is not None:
+                    embeddings.append(emb)
+                    valid.append(i)
+        else:
+            embeddings, valid = self._extract_all(audio_chunks)
         result = {i: "?" for i in range(len(audio_chunks))}
 
         if len(embeddings) < 2:
@@ -225,7 +234,7 @@ class CampPlusSpeaker:
 
         if strategy == "single":
             labels = self._ahc(emb_matrix, threshold=_DIST_THRESHOLD, n=n_speakers)
-        elif strategy == "spectral":
+        elif strategy in ("spectral", "vad_sliding"):
             n = len(embeddings)
             # 自动估 K：n_speakers 给定则 oracle-K；否则 eigengap heuristic
             if n_speakers is not None:
