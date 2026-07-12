@@ -87,8 +87,8 @@ class SegmentationEngine:
         with torch.no_grad():
             powerset = self.model(waveform.to(self.device))  # (1, F, 7)
 
-        multilabel = self.to_multilabel(powerset)  # (1, F, 3)
-        activity = multilabel[0].cpu().numpy()  # (F, 3)
+        multilabel = self.to_multilabel(powerset.cpu())  # (1, F, 3)
+        activity = multilabel[0].numpy()  # (F, 3)
 
         num_frames = activity.shape[0]
         frame_sec = actual_duration / num_frames  # 每帧对应的秒数

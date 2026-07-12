@@ -161,7 +161,7 @@ def main():
     ap.add_argument("--step", type=float, default=0.01)
     ap.add_argument("--out", default="test_results/der_single.json")
     ap.add_argument("--diarize_strategy", default="spectral",
-                    choices=["single", "two_stage", "spectral", "vad_sliding"],
+                    choices=["single", "two_stage", "spectral", "vad_sliding", "seg_clustering"],
                     help="说话人聚类策略（默认 spectral）")
     args = ap.parse_args()
 
