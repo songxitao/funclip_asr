@@ -110,6 +110,45 @@ class CampPlusSpeaker:
             logger.warning(f"[Speaker] 向量提取失败: {e}")
             return None
 
+    def extract_embedding_sliding_mean(self, chunk_16k, sr=16000, win_sec=1.5, step_sec=0.5) -> Optional[np.ndarray]:
+        """提取活性音频片段的滑动窗口平均说话人向量，并做 L2 归一化提纯。
+
+        Args:
+            chunk_16k: 1D 音频数组 (numpy array 或 torch tensor)
+            sr: 采样率，默认 16000
+            win_sec: 窗长（秒），默认 1.5
+            step_sec: 步长（秒），默认 0.5
+        Returns:
+            提纯后的归一化一维声纹向量 (np.ndarray)，若提取失败则返回 None
+        """
+        if chunk_16k is None:
+            return None
+        if hasattr(chunk_16k, "cpu"):
+            arr = chunk_16k.cpu().numpy()
+        elif hasattr(chunk_16k, "numpy"):
+            arr = chunk_16k.numpy()
+        else:
+            arr = np.asarray(chunk_16k)
+        
+        windows = segment_sliding_window(arr, sr, win_sec, step_sec)
+        if not windows:
+            return self.extract_embedding(arr)
+        
+        embs = []
+        for _, _, samp in windows:
+            emb = self.extract_embedding(samp)
+            if emb is not None:
+                embs.append(emb)
+        
+        if not embs:
+            return self.extract_embedding(arr)
+        
+        mean_emb = np.mean(embs, axis=0)
+        norm = np.linalg.norm(mean_emb)
+        if norm > 1e-6:
+            mean_emb = mean_emb / norm
+        return mean_emb
+
     # ---------------- 内部工具 ----------------
 
     def _extract_all(self, audio_chunks):
