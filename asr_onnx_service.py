@@ -685,6 +685,9 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
             # 再次按时间排序
             segments = sorted(segments, key=lambda x: x["start"])
 
+            # 合并相邻同说话人段（适用于 diarized_text、segments、SRT 输出）
+            segments = _merge_same_speaker_segments(segments)
+
             # 6. 生成 diarized_text 和 raw_text
             diarized_text = "\n".join(
                 f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"].strip()
@@ -791,6 +794,8 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                         "speaker": spk,
                         "text": seg_text,
                     })
+            # 合并相邻同说话人段（适用于所有 diarize 策略）
+            segments = _merge_same_speaker_segments(segments)
             diarized_text = "\n".join(
                 f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"]
             )
