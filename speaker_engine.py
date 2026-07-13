@@ -514,7 +514,7 @@ class CampPlusSpeaker:
                 sc = SpectralClustering(
                     n_clusters=n_clusters,
                     affinity='nearest_neighbors',
-                    n_neighbors=min(10, max(3, n // 20), n - 1),
+                    n_neighbors=min(10, n - 1),
                     assign_labels='kmeans',
                     random_state=42,
                 )

@@ -567,57 +567,6 @@ def _assign_clauses_to_speakers_seamless(asr_start, asr_end, text, seamless_segs
     return merged_sub
 
 
-def _task_diarization(y, num_speakers):
-    """在并行管线中运行说话人分离（seg-3.0 + Cam++ + 谱聚类）"""
-    t0 = time.time()
-    seg_engine = _get_seg_model()
-    spk_model = _get_spk_model()
-    seamless_segs = spk_model.cluster_with_seamless_segmentation(
-        y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
-    )
-    refined_segs = []
-    for st_sec, en_sec, val in seamless_segs:
-        if isinstance(val, int):
-            refined_segs.append((st_sec * 1000, en_sec * 1000, val))
-        else:
-            refined_segs.append((st_sec * 1000, en_sec * 1000, val))
-    refined_segs = sorted(refined_segs, key=lambda x: x[0])
-    logger.info(f"[并行] 说话人分离完成，耗时 {time.time()-t0:.1f}s")
-    return refined_segs
-
-
-def _task_asr(audio_path, y, engine_key, duration_ms):
-    """在并行管线中运行 VAD + ASR 解码"""
-    t0 = time.time()
-    vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
-    raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
-    opt_segs = _merge_vad_segments(raw_segs)
-
-    asr_waveforms = []
-    final_opt_segs = []
-    for start_ms, end_ms in opt_segs:
-        s_idx = int(start_ms * 16)
-        e_idx = int(end_ms * 16)
-        chunk = y[max(0, s_idx - 800): min(len(y), e_idx + 800)]
-        if len(chunk) < 1600:
-            continue
-        asr_waveforms.append(chunk)
-        final_opt_segs.append((start_ms, end_ms))
-
-    if not asr_waveforms:
-        return None
-
-    texts = _decode(engine_key, asr_waveforms)
-    punc_texts = []
-    for t in texts:
-        cleaned = _clean(t)
-        punc_text = _post_punc(cleaned)
-        punc_texts.append(punc_text)
-
-    logger.info(f"[并行] ASR 解码完成，耗时 {time.time()-t0:.1f}s")
-    return (final_opt_segs, punc_texts)
-
-
 def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, diarize: bool = False,
                    diarize_strategy: str = "two_stage", num_speakers: int = None):
     """同步推理逻辑（在独立线程运行）。
@@ -637,23 +586,51 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
 
     if diarize and diarize_strategy == "seg_clustering":
         try:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_diar = pool.submit(_task_diarization, y, num_speakers)
-                future_asr = pool.submit(_task_asr, audio_path, y, engine_key, duration_ms)
+            # 1. 运行全局说话人聚类与分割（保证说话人3等全局一致性）
+            seg_engine = _get_seg_model()
+            spk_model = _get_spk_model()
+            seamless_segs = spk_model.cluster_with_seamless_segmentation(
+                y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
+            )
+            
+            # 无缝时间轴：确定段毫秒，未知段保留 seg_type
+            refined_segs = []
+            for st_sec, en_sec, val in seamless_segs:
+                if isinstance(val, int):
+                    refined_segs.append((st_sec * 1000, en_sec * 1000, val))
+                else:
+                    refined_segs.append((st_sec * 1000, en_sec * 1000, val))
+            refined_segs = sorted(refined_segs, key=lambda x: x[0])
 
-                refined_segs = future_diar.result()
-                asr_result = future_asr.result()
+            # 2. 运行 VAD 分割过滤静音段（粗粒度段）
+            vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
+            raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
+            opt_segs = _merge_vad_segments(raw_segs)
 
-            if refined_segs is None or asr_result is None:
-                raise RuntimeError("并行任务失败")
+            # 3. 对 VAD 粗粒度段进行 ASR 波形切分，加左右各 800ms 缓冲，保证识别不丢字
+            asr_waveforms = []
+            final_opt_segs = []
+            for start_ms, end_ms in opt_segs:
+                s_idx = int(start_ms * 16)
+                e_idx = int(end_ms * 16)
+                chunk = y[max(0, s_idx - 800): min(len(y), e_idx + 800)]
+                if len(chunk) < 1600:
+                    continue
+                asr_waveforms.append(chunk)
+                final_opt_segs.append((start_ms, end_ms))
 
-            final_opt_segs, punc_texts = asr_result
-
-            if not final_opt_segs:
+            if not asr_waveforms:
                 return ("", engine_key, [], "")
 
-            # 汇合：子句级分配（串行，极快）
+            # 4. 批量解码 ASR chunks 并施加标点
+            texts = _decode(engine_key, asr_waveforms)
+            punc_texts = []
+            for t in texts:
+                cleaned = _clean(t)
+                punc_text = _post_punc(cleaned)
+                punc_texts.append(punc_text)
+
+            # 5. 子句级对齐分配与排重
             segments = []
             for (asr_start, asr_end), punc_text in zip(final_opt_segs, punc_texts):
                 if not punc_text.strip():
@@ -661,8 +638,10 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                 sub_segs = _assign_clauses_to_speakers_seamless(asr_start, asr_end, punc_text, refined_segs)
                 segments.extend(sub_segs)
 
+            # 再次按时间排序
             segments = sorted(segments, key=lambda x: x["start"])
 
+            # 6. 生成 diarized_text 和 raw_text
             diarized_text = "\n".join(
                 f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"].strip()
             )
@@ -670,7 +649,7 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
 
             return (raw_text, engine_key, segments, diarized_text)
         except Exception as e:
-            logger.error(f"并行管线失败: {e}", exc_info=True)
+            logger.error(f"VAD-assisted Diarization-driven ASR failed: {e}", exc_info=True)
             # 失败则回退原流程
 
     use_vad = _use_vad(vad_strategy, duration_ms)
@@ -729,6 +708,31 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                         "end": int(en * 1000),
                         "speaker": str(spk),
                         "text": "",
+                    })
+            elif diarize_strategy == "seg_clustering":
+                seg_engine = _get_seg_model()
+                merged = _get_spk_model().cluster_with_segmentation(
+                    y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
+                )
+                for st_sec, en_sec, spk in merged:
+                    seg_start_ms = st_sec * 1000
+                    seg_end_ms = en_sec * 1000
+                    
+                    # 按时间重叠判断回填重合部分的 ASR text
+                    matched_texts = []
+                    for i, (asr_start, asr_end) in enumerate(seg_meta):
+                        overlap = min(seg_end_ms, asr_end) - max(seg_start_ms, asr_start)
+                        if overlap > 0:
+                            asr_text = clean_texts[i] if i < len(clean_texts) else ""
+                            if asr_text.strip():
+                                matched_texts.append(asr_text.strip())
+                    
+                    seg_text = "".join(matched_texts)
+                    segments.append({
+                        "start": int(seg_start_ms),
+                        "end": int(seg_end_ms),
+                        "speaker": str(spk),
+                        "text": seg_text,
                     })
             else:
                 spk_cache = _get_spk_model().cluster(
