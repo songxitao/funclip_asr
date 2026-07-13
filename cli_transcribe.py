@@ -30,7 +30,7 @@ def main():
     parser.add_argument("audio_path", help="音频文件路径 (WAV/MP3/FLAC 等)")
     parser.add_argument("--diarize", action="store_true", help="是否开启说话人角色分离")
     parser.add_argument("--strategy", default="seg_clustering",
-                        choices=["seg_clustering", "vad_sliding", "spectral", "two_stage", "seg_cut_asr"],
+                        choices=["seg_clustering", "vad_sliding", "spectral", "two_stage"],
                         help="说话人分离聚类策略 (默认: seg_clustering)")
     parser.add_argument("--num_speakers", type=int, default=None,
                         help="指定说话人人数 (可选)")
