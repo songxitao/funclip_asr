@@ -699,6 +699,93 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
             logger.error(f"VAD-assisted Diarization-driven ASR failed: {e}", exc_info=True)
             # 失败则回退原流程
 
+    if diarize and diarize_strategy == "seg_cut_asr":
+        try:
+            t0 = time.time()
+            # 1. seg-3.0 + Cam++ → 说话人时间轴（复用无缝路径）
+            seg_engine = _get_seg_model()
+            spk_model = _get_spk_model()
+            seamless_segs = spk_model.cluster_with_seamless_segmentation(
+                y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
+            )
+
+            # 2. 转换为毫秒，只保留确定段
+            raw_segs = []
+            for st_sec, en_sec, val in seamless_segs:
+                if isinstance(val, int):
+                    raw_segs.append((st_sec * 1000, en_sec * 1000, val))
+            raw_segs = sorted(raw_segs, key=lambda x: x[0])
+
+            if not raw_segs:
+                raise RuntimeError("seg_cut_asr: 没有确定段")
+
+            # 3. 合并相邻同说话人段
+            merged = []
+            cs, ce, cp = raw_segs[0]
+            for st, en, spk in raw_segs[1:]:
+                if spk == cp:
+                    ce = en
+                else:
+                    merged.append((cs, ce, cp))
+                    cs, ce, cp = st, en, spk
+            merged.append((cs, ce, cp))
+
+            logger.info(f"[seg_cut_asr] 说话人时间轴: {len(merged)} 段, {len(raw_segs)} 原始段 → {len(merged)} 合并段")
+
+            # 4. 在切换点切分音频，逐段 ASR
+            segments = []
+            cleaned_texts = []
+            for seg_start_ms, seg_end_ms, spk in merged:
+                # 加 padding（前 200ms + 后 200ms）
+                s_idx = int(max(0, seg_start_ms - 200) * 16)
+                e_idx = int(min(len(y), seg_end_ms + 200) * 16)
+                chunk = y[s_idx:e_idx]
+
+                if len(chunk) < 1600:  # 太短，ASR 无法识别
+                    continue
+
+                texts = _decode(engine_key, [chunk])
+                text = texts[0] if texts else ""
+                cleaned = _clean(text)
+
+                if cleaned.strip():
+                    segments.append({
+                        "start": int(seg_start_ms),
+                        "end": int(seg_end_ms),
+                        "speaker": str(spk),
+                        "text": cleaned  # 先不逐段加标点
+                    })
+                    cleaned_texts.append(cleaned)
+
+            # 5. 所有段文本拼接后统一跑 _post_punc（有完整上下文，标点更准）
+            if cleaned_texts:
+                full_text = "\n".join(cleaned_texts)
+                punc_full = _post_punc(full_text)
+
+                # 按原文本长度比例将标点结果分回各段
+                punc_lines = punc_full.split("\n")
+                for i, seg in enumerate(segments):
+                    if i < len(punc_lines):
+                        seg["text"] = punc_lines[i]
+
+            # 6. 合并相邻同说话人段（防止切分太碎）
+            segments = _merge_same_speaker_segments(segments)
+
+            if not segments:
+                return ("", engine_key, [], "")
+
+            diarized_text = "\n".join(
+                f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"].strip()
+            )
+            raw_text = "\n".join([seg["text"] for seg in segments if seg["text"].strip()])
+
+            logger.info(f"[seg_cut_asr] 完成，耗时 {time.time()-t0:.1f}s，{len(segments)} 段")
+
+            return (raw_text, engine_key, segments, diarized_text)
+        except Exception as e:
+            logger.error(f"seg_cut_asr 实验失败: {e}", exc_info=True)
+            # 失败后 fallthrough 到普通流程
+
     use_vad = _use_vad(vad_strategy, duration_ms)
 
     # 说话人分离要求先做语音切分
