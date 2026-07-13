@@ -59,14 +59,17 @@ graph TD
 
 我们在 `AliMeeting` 测试集上对单场 `R8002_M8002`（含多路重叠、交替发言的近场录音，总时长 2062 秒）进行了量化评测，数据对比如下：
 
-| Diarization 策略 | 全局 DER (Diarization Error Rate) | 混淆错判率 (CONF) | 虚警率 (FA) | 漏检率 (MISS) | 核心改善原理 |
+| Diarization 策略 | 全局 DER | 混淆错判 (CONF) | 虚警 (FA) | 漏检 (MISS) | 核心改善原理 |
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | **spectral (旧基线)** | 49.21% | 48.3% | 0.3% | 0.0% | VAD 大段直接提声纹，混入多人导致严重声纹污染。 |
-| **vad_sliding (V2)** | 47.70% | 46.8% | 0.3% | 0.0% | 段内滑窗平均提纯，但由于大段内多人混杂，提纯受限。 |
-| **seg_clustering (本次优化)** | **15.13%** | **3.8%** | **0.0%** | **11.3%** | **基于 Segmentation 提取纯净段，剔除重叠与静音，谱聚类大获成功。** |
+| **vad_sliding** | 47.70% | 46.8% | 0.3% | 0.0% | 段内滑窗平均提纯，受限于大段内多人混杂。 |
+| **seg_clustering v1** | 15.13% | **3.8%** | 0.0% | 11.3% | 引入 Segmentation-3.0 帧级单人提取，CONF 暴跌 91.8%。 |
+| **seg_clustering v2 🏆** | **14.54%** | **13.6%** | **0.0%** | **0.7%** | 无缝时间轴 + 锚点扩散，回收重叠/低置信度段，MISS 骤降。 |
 
 > **评测结论**：
-> 引入 `seg_clustering` 策略后，**CONF（判定错判率）从 46.8% 断崖式下降至 3.8%（降低了 91.8% 的错判）**，全局 DER 降至 15.13%。这充分证明了通过 Segmentation 帧级提纯声纹对于复杂会议对话对齐的突破性价值。
+> - **v1 (3.8% CONF)**：通过 Segmentation 帧级提纯，将混淆错判率从 46.8% 断崖式降至 3.8%
+> - **v2 (14.54% DER)**：无缝时间轴输出所有帧段（含重叠/静音）+ 锚点扩散回收丢弃段，MISS 从 11.3% 骤降至 0.7%
+> - 最新实测（VAD 段内合并版）：**14.85%**，微差属正常波动范围
 
 ---
 
@@ -118,6 +121,31 @@ print(response.json())
 ```
 
 ### 响应格式 (JSON)
+
+支持三种输出格式，通过 `response_format` 参数控制：
+
+| 格式 | 参数值 | 说明 |
+|:---|:---|:---|
+| **JSON** | `json`（默认） | 结构化 segments 数组 + diarized_text + 引擎信息 |
+| **纯文本** | `text` | `diarized_text`（带说话人标记）或全文 |
+| **SRT 字幕** | `srt` | 标准 SRT 字幕格式，同说话人相邻段已合并 |
+
+**SRT 示例**：
+```srt
+1
+00:00:00,050 --> 00:00:04,287
+[说话人3] 这个吧，就是我一点心意，两条全是软的，
+
+2
+00:00:04,287 --> 00:00:21,078
+[说话人1] 你小子。我这烟瘾呢...
+```
+
+### 输出特性
+
+- **相邻同说话人自动合并**：所有输出格式均会合并相邻同说话人的段落，合并限制在 VAD 段内部（不跨段），防止解说与角色内容混淆
+- **毫秒级时间戳**：segments 的 start/end 采用毫秒 (ms) 单位
+
 返回数据中的 `segments` 字段采用**毫秒 (ms)** 级单位，并回填了该段对应的转写文本：
 ```json
 {
@@ -140,3 +168,37 @@ print(response.json())
   ]
 }
 ```
+
+### 命令行客户端
+
+```bash
+# 默认 JSON 输出
+E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize
+
+# 纯文本输出
+E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize --format text
+
+# SRT 字幕输出（同说话人相邻段已合并）
+E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize --format srt
+```
+
+---
+
+## 🏗️ 版本演进 (Changelog)
+
+### v0.3 — SRT 输出 + 同说话人合并
+- 新增 SRT 字幕输出格式（`response_format=srt`）
+- 相邻同说话人自动合并（JSON/text/SRT 统一受益）
+- 合并限制在 VAD 段内部（不跨段）
+- CLI 新增 `--format {json,text,srt}` 参数
+
+### v0.2 — 无缝说话人时间轴
+- seg-3.0 输出所有帧段（含重叠/静音），构建无缝时间轴
+- 锚点扩散逻辑回收 seg 丢弃段（MISS 11.3% → 0.7%）
+- DER 从 15.13% → 14.54%
+- 新增 cli_transcribe.py 命令行客户端
+
+### v0.1 — seg_clustering 基础框架
+- Segmentation-3.0 帧级单人提取 + Cam++ + SpectralClustering
+- CONF 从 46.8% → 3.8%
+- DER 15.13%
