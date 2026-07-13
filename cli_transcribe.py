@@ -34,6 +34,8 @@ def main():
                         help="说话人分离聚类策略 (默认: seg_clustering)")
     parser.add_argument("--num_speakers", type=int, default=None,
                         help="指定说话人人数 (可选)")
+    parser.add_argument("--format", default="json", choices=["json", "text", "srt"],
+                        help="输出格式：json(默认, 含详细段信息), text(纯文本), srt(字幕)")
     parser.add_argument("--url", default=DEFAULT_URL, help="API 服务地址")
     args = parser.parse_args()
 
@@ -64,7 +66,7 @@ def main():
             data = {
                 "diarize": "true" if args.diarize else "false",
                 "diarize_strategy": args.strategy,
-                "response_format": "json"
+                "response_format": args.format
             }
             if args.num_speakers is not None:
                 data["num_speakers"] = str(args.num_speakers)
@@ -75,23 +77,28 @@ def main():
             print(f"❌ 识别失败，服务返回 HTTP {resp.status_code}: {resp.text}")
             sys.exit(1)
 
-        res = resp.json()
-        print(f"✓ 推理成功！引擎: {res.get('engine')} | 端到端耗时: {res.get('latency_ms', 0):.1f}ms\n")
+        if args.format == "json":
+            res = resp.json()
+            print(f"✓ 推理成功！引擎: {res.get('engine')} | 端到端耗时: {res.get('latency_ms', 0):.1f}ms\n")
 
-        print("=================== 🗣️  转写文本结果 ===================")
-        if args.diarize:
-            diarized_text = res.get("diarized_text", "")
-            if diarized_text:
-                print(diarized_text)
+            print("=================== 🗣️  转写文本结果 ===================")
+            if args.diarize:
+                diarized_text = res.get("diarized_text", "")
+                if diarized_text:
+                    print(diarized_text)
+                else:
+                    # 兜底以 segments 渲染
+                    for seg in res.get("segments", []):
+                        spk = seg.get("speaker", "?")
+                        txt = seg.get("text", "")
+                        print(f"[说话人{spk}] {txt}")
             else:
-                # 兜底以 segments 渲染
-                for seg in res.get("segments", []):
-                    spk = seg.get("speaker", "?")
-                    txt = seg.get("text", "")
-                    print(f"[说话人{spk}] {txt}")
+                print(res.get("text", ""))
+            print("======================================================")
         else:
-            print(res.get("text", ""))
-        print("======================================================")
+            # text / srt: 服务返回纯文本
+            print(f"✓ 推理成功！耗时: {resp.elapsed.total_seconds()*1000:.1f}ms\n")
+            print(resp.text)
 
     except Exception as e:
         print(f"❌ 运行发生异常: {e}")
