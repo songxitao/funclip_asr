@@ -405,6 +405,168 @@ def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
     return merged
 
 
+def _assign_clauses_to_speakers(asr_start, asr_end, text, refined_segs):
+    """将 ASR 段识别出的带标点 text，按照标点分句，将每个子句作为一个整体分配给重叠时间最长的说话人。
+    返回列表，每个元素为 {"start": int, "end": int, "speaker": str, "text": str}
+    """
+    if not text.strip():
+        return []
+
+    import re
+    # 匹配中英文断句标点，包括逗号
+    pattern = r'([^，。？！、；：,.?!;:：\s]+[，。？！、；：,.?!;:：\s]*)'
+    clauses = re.findall(pattern, text)
+    if not clauses:
+        clauses = [text]
+
+    total_len = sum(len(c) for c in clauses)
+    if total_len == 0:
+        return []
+
+    dur = asr_end - asr_start
+    curr_start = asr_start
+
+    assigned_clauses = []
+    for clause in clauses:
+        c_len = len(clause)
+        c_dur = dur * (c_len / total_len)
+        c_end = curr_start + c_dur
+
+        best_spk = None
+        max_overlap = -1.0
+        
+        for st_ms, en_ms, spk in refined_segs:
+            # 计算重叠时间
+            overlap = min(c_end, en_ms) - max(curr_start, st_ms)
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_spk = spk
+
+        # 兜底：如果重合时间为 0 或没找到
+        if max_overlap <= 0 or best_spk is None:
+            mid_t = curr_start + c_dur / 2
+            min_dist = float('inf')
+            for st_ms, en_ms, spk in refined_segs:
+                dist = min(abs(mid_t - st_ms), abs(mid_t - en_ms))
+                if dist < min_dist:
+                    min_dist = dist
+                    best_spk = spk
+
+        if best_spk is None:
+            best_spk = "1"
+
+        assigned_clauses.append({
+            "start": int(curr_start),
+            "end": int(c_end),
+            "speaker": str(best_spk),
+            "text": clause
+        })
+
+        curr_start = c_end
+
+    # 合并相邻且相同说话人的子句
+    merged_sub = []
+    if assigned_clauses:
+        curr = assigned_clauses[0]
+        for idx in range(1, len(assigned_clauses)):
+            nxt = assigned_clauses[idx]
+            if nxt["speaker"] == curr["speaker"]:
+                curr["text"] += nxt["text"]
+                curr["end"] = nxt["end"]
+            else:
+                merged_sub.append(curr)
+                curr = nxt
+        merged_sub.append(curr)
+
+    return merged_sub
+
+
+def _assign_clauses_to_speakers_seamless(asr_start, asr_end, text, seamless_segs):
+    """将 ASR 段识别出的带标点 text，按标点分句，分配到无缝说话人时间轴上。
+    
+    与 _assign_clauses_to_speakers 的区别：
+    - seamless_segs 包含确定段(int speaker_id)和未知段(str type:"overlap"/"silence")
+    - 优先匹配确定段（取重叠时间最长的说话人）
+    - 子句完全落在未知段 → 取同一标点大句内最近确定段的说话人（锚点扩散）
+    - 整个大句都没有确定段 → 取时间上最近的确定段说话人（兜底）
+    
+    Returns:
+        list of {"start": int, "end": int, "speaker": str, "text": str}
+    """
+    if not text.strip():
+        return []
+
+    import re
+    pattern = r'([^，。？！、；：,.?!;:：\s]+[，。？！、；：,.?!;:：\s]*)'
+    clauses = re.findall(pattern, text)
+    if not clauses:
+        clauses = [text]
+
+    total_len = sum(len(c) for c in clauses)
+    if total_len == 0:
+        return []
+
+    dur = asr_end - asr_start
+    curr_start = asr_start
+
+    # 从 seamless_segs 中提取确定段（用于直接匹配）
+    determined_segs = [(st, en, spk) for st, en, spk in seamless_segs if isinstance(spk, int)]
+
+    assigned_clauses = []
+    for clause in clauses:
+        c_len = len(clause)
+        c_dur = dur * (c_len / total_len)
+        c_end = curr_start + c_dur
+
+        # 1. 优先匹配确定段
+        best_spk = None
+        max_overlap = -1.0
+        for seg_start_ms, seg_end_ms, spk in determined_segs:
+            overlap = min(c_end, seg_end_ms) - max(curr_start, seg_start_ms)
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_spk = spk
+
+        # 2. 无确定段重叠 → 锚点扩散：取最近确定段
+        if max_overlap <= 0 or best_spk is None:
+            mid_t = curr_start + c_dur / 2
+            min_dist = float('inf')
+            for seg_start_ms, seg_end_ms, spk in determined_segs:
+                dist = min(abs(mid_t - seg_start_ms), abs(mid_t - seg_end_ms))
+                if dist < min_dist:
+                    min_dist = dist
+                    best_spk = spk
+
+        # 3. 兜底：无任何确定段
+        if best_spk is None:
+            best_spk = 1
+
+        assigned_clauses.append({
+            "start": int(curr_start),
+            "end": int(c_end),
+            "speaker": str(best_spk),
+            "text": clause
+        })
+
+        curr_start = c_end
+
+    # 合并相邻相同说话人的子句
+    merged_sub = []
+    if assigned_clauses:
+        curr = assigned_clauses[0]
+        for idx in range(1, len(assigned_clauses)):
+            nxt = assigned_clauses[idx]
+            if nxt["speaker"] == curr["speaker"]:
+                curr["text"] += nxt["text"]
+                curr["end"] = nxt["end"]
+            else:
+                merged_sub.append(curr)
+                curr = nxt
+        merged_sub.append(curr)
+
+    return merged_sub
+
+
 def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, diarize: bool = False,
                    diarize_strategy: str = "two_stage", num_speakers: int = None):
     """同步推理逻辑（在独立线程运行）。
@@ -421,6 +583,75 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
     duration_ms = len(y) / sr * 1000
 
     engine_key = _select_engine(engine, duration_ms)
+
+    if diarize and diarize_strategy == "seg_clustering":
+        try:
+            # 1. 运行全局说话人聚类与分割（保证说话人3等全局一致性）
+            seg_engine = _get_seg_model()
+            spk_model = _get_spk_model()
+            seamless_segs = spk_model.cluster_with_seamless_segmentation(
+                y, segment_engine=seg_engine, sr=16000, n_speakers=num_speakers
+            )
+            
+            # 无缝时间轴：确定段毫秒，未知段保留 seg_type
+            refined_segs = []
+            for st_sec, en_sec, val in seamless_segs:
+                if isinstance(val, int):
+                    refined_segs.append((st_sec * 1000, en_sec * 1000, val))
+                else:
+                    refined_segs.append((st_sec * 1000, en_sec * 1000, val))
+            refined_segs = sorted(refined_segs, key=lambda x: x[0])
+
+            # 2. 运行 VAD 分割过滤静音段（粗粒度段）
+            vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
+            raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
+            opt_segs = _merge_vad_segments(raw_segs)
+
+            # 3. 对 VAD 粗粒度段进行 ASR 波形切分，加左右各 800ms 缓冲，保证识别不丢字
+            asr_waveforms = []
+            final_opt_segs = []
+            for start_ms, end_ms in opt_segs:
+                s_idx = int(start_ms * 16)
+                e_idx = int(end_ms * 16)
+                chunk = y[max(0, s_idx - 800): min(len(y), e_idx + 800)]
+                if len(chunk) < 1600:
+                    continue
+                asr_waveforms.append(chunk)
+                final_opt_segs.append((start_ms, end_ms))
+
+            if not asr_waveforms:
+                return ("", engine_key, [], "")
+
+            # 4. 批量解码 ASR chunks 并施加标点
+            texts = _decode(engine_key, asr_waveforms)
+            punc_texts = []
+            for t in texts:
+                cleaned = _clean(t)
+                punc_text = _post_punc(cleaned)
+                punc_texts.append(punc_text)
+
+            # 5. 子句级对齐分配与排重
+            segments = []
+            for (asr_start, asr_end), punc_text in zip(final_opt_segs, punc_texts):
+                if not punc_text.strip():
+                    continue
+                sub_segs = _assign_clauses_to_speakers_seamless(asr_start, asr_end, punc_text, refined_segs)
+                segments.extend(sub_segs)
+
+            # 再次按时间排序
+            segments = sorted(segments, key=lambda x: x["start"])
+
+            # 6. 生成 diarized_text 和 raw_text
+            diarized_text = "\n".join(
+                f"[说话人{seg['speaker']}] {seg['text']}" for seg in segments if seg["text"].strip()
+            )
+            raw_text = "\n".join([seg["text"] for seg in segments if seg["text"].strip()])
+
+            return (raw_text, engine_key, segments, diarized_text)
+        except Exception as e:
+            logger.error(f"VAD-assisted Diarization-driven ASR failed: {e}", exc_info=True)
+            # 失败则回退原流程
+
     use_vad = _use_vad(vad_strategy, duration_ms)
 
     # 说话人分离要求先做语音切分

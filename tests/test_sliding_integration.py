@@ -114,7 +114,7 @@ def test_run_inference_seg_clustering_returns_speaker_text_segments():
         # Mock _get_spk_model, _get_seg_model, _decode, VAD_MODEL
         with patch.object(svc, "_get_spk_model", return_value=FakeSpk()), \
              patch.object(svc, "_get_seg_model", return_value=FakeSegEngine()), \
-             patch.object(svc, "_decode", return_value=["测试文本"]), \
+             patch.object(svc, "_decode", side_effect=lambda eng, waves: ["测试文本"] * len(waves)), \
              patch.object(svc, "VAD_MODEL", FakeVAD()):
             _, _, segments, diarized_text = svc._run_inference(
                 tmp_path, vad_strategy="never", diarize=True,

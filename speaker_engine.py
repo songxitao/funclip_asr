@@ -20,7 +20,7 @@ speaker_engine.py — 基于 Cam++ (speech_campplus_sv) 的说话人向量提取
   - 参考自本项目 funclip/asr1.py 的 SpeakerDiarizer 离线聚类实现
 """
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering, SpectralClustering
@@ -444,5 +444,117 @@ class CampPlusSpeaker:
                 merged.append((cur_start, cur_end, cur_spk))
                 cur_start, cur_end, cur_spk = st, en, spk
         merged.append((cur_start, cur_end, cur_spk))
+
+        return merged
+
+    def cluster_with_seamless_segmentation(
+        self,
+        audio_16k: np.ndarray,
+        segment_engine,
+        sr: int = 16000,
+        n_speakers: Optional[int] = None,
+    ) -> List[Tuple[float, float, Union[int, str]]]:
+        """整段音频经过 segmentation 无缝切割后聚类，保留未知段标记。
+
+        与 cluster_with_segmentation() 的区别：
+        - segment_engine 调用 process_full_audio_seamless() 获取所有段（含未知段）
+        - 只对 type=="single" 的段提 Cam++ embedding
+        - 未知段（overlap/silence）不参与聚类，保留 seg_type 作为标记
+        - 输出保持时间轴无缝覆盖所有 segment
+
+        Args:
+            audio_16k: 1D numpy array 格式的完整音频
+            segment_engine: 说话人分割引擎实例，要求实现 process_full_audio_seamless 方法
+            sr: 采样率，默认 16000
+            n_speakers: oracle-K 说话人数量
+
+        Returns:
+            List of (start_sec, end_sec, speaker_or_type)
+            speaker_or_type: int(speaker_id) for single segments, str("overlap"/"silence") for unknown
+        """
+        # 1. 提取所有段（无缝时间轴）
+        segs = segment_engine.process_full_audio_seamless(audio_16k, sr=sr)
+        if not segs:
+            return []
+
+        # 2. 只对 single 段提 embedding
+        single_indices = []  # 在 segs 中的索引
+        embeddings = []
+        for idx, (start, end, seg_type, seg_audio) in enumerate(segs):
+            if seg_type == "single" and seg_audio is not None:
+                emb = self.extract_embedding(seg_audio)
+                if emb is not None:
+                    embeddings.append(emb)
+                    single_indices.append(idx)
+
+        # 3. 结果容器：默认保持原始 seg_type
+        result = []
+        for start, end, seg_type, _ in segs:
+            if seg_type == "single":
+                result.append((start, end, 1))  # 临时默认值，后面覆盖
+            else:
+                result.append((start, end, seg_type))
+
+        # 4. 聚类 single 段
+        if embeddings:
+            emb_matrix = np.vstack(embeddings)
+            n = len(embeddings)
+
+            if n_speakers is not None:
+                n_clusters = n_speakers
+            else:
+                n_clusters = max(2, min(20, n // 10))
+            n_clusters = min(n_clusters, n - 1, 20)
+            if n_clusters < 1:
+                n_clusters = 1
+
+            if n_clusters == 1 or n <= 1:
+                labels = np.zeros(n, dtype=int)
+            else:
+                sc = SpectralClustering(
+                    n_clusters=n_clusters,
+                    affinity='nearest_neighbors',
+                    n_neighbors=min(10, n - 1),
+                    assign_labels='kmeans',
+                    random_state=42,
+                )
+                labels = sc.fit_predict(emb_matrix)
+
+            # 回填 single 段的聚类结果
+            for k, idx in enumerate(single_indices):
+                start, end, _ = result[idx]
+                result[idx] = (start, end, int(labels[k]) + 1)
+
+            # 前后向填充：提取 embedding 失败的 single 段用最近有效标签
+            last_valid = 1
+            for i in range(len(result)):
+                st, en, val = result[i]
+                if isinstance(val, int):
+                    last_valid = val
+                    break
+            for i in range(len(result)):
+                st, en, val = result[i]
+                if isinstance(val, int):
+                    last_valid = val
+                elif val == "single":  # 提取 embedding 失败的 single 段
+                    result[i] = (st, en, last_valid)
+        else:
+            # 全失败，整段标 1
+            for i in range(len(result)):
+                st, en, val = result[i]
+                if isinstance(val, int) or val == "single":
+                    result[i] = (st, en, 1)
+
+        # 5. 合并相邻同人段（只合并 single 段，遇到 overlap/silence 断开）
+        merged = []
+        cur_start, cur_end, cur_val = result[0]
+        for idx in range(1, len(result)):
+            st, en, val = result[idx]
+            if isinstance(val, int) and isinstance(cur_val, int) and val == cur_val and (st - cur_end) < 0.5:
+                cur_end = en
+            else:
+                merged.append((cur_start, cur_end, cur_val))
+                cur_start, cur_end, cur_val = st, en, val
+        merged.append((cur_start, cur_end, cur_val))
 
         return merged
