@@ -674,19 +674,18 @@ def _run_inference(audio_path: str, vad_strategy: str = "auto", engine=None, dia
                 punc_text = _post_punc(cleaned)
                 punc_texts.append(punc_text)
 
-            # 5. 子句级对齐分配与排重
+            # 5. 子句级对齐分配与排重（每个 VAD 段内独立合并同说话人，不跨段）
             segments = []
             for (asr_start, asr_end), punc_text in zip(final_opt_segs, punc_texts):
                 if not punc_text.strip():
                     continue
                 sub_segs = _assign_clauses_to_speakers_seamless(asr_start, asr_end, punc_text, refined_segs)
+                # 只在 VAD 段内部合并相邻同说话人，防止解说与角色跨段混淆
+                sub_segs = _merge_same_speaker_segments(sub_segs)
                 segments.extend(sub_segs)
 
             # 再次按时间排序
             segments = sorted(segments, key=lambda x: x["start"])
-
-            # 合并相邻同说话人段（适用于 diarized_text、segments、SRT 输出）
-            segments = _merge_same_speaker_segments(segments)
 
             # 6. 生成 diarized_text 和 raw_text
             diarized_text = "\n".join(
