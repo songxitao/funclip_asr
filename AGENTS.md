@@ -50,3 +50,15 @@
   ```bash
   E:\conda\envs\asr_ui_env\python.exe asr_onnx_service.py
   ```
+
+## 4. 📦 SDK 包结构（P1 算法下沉落点）
+
+- `src/funclip_pro/` 为统一算法 SDK 包，P1 起根目录算法按职责下沉：
+  - `core.segmentation` ← `SegmentationEngine`（segmentation_engine.py）
+  - `core.speaker` ← `CampPlusSpeaker`（speaker_engine.py）
+  - `core.asr` ← `SenseVoiceSmall`(ONNX) / `PyTorchSenseVoice` / `SherpaSenseVoice` + 解码工具（asr_onnx_service.py / torch_engine.py / sherpa_engine.py）
+  - `core.alignment` ← 子句说话人分配对齐（锚点扩散）
+  - `utils.srt` ← SRT 转换 + VAD 段内合并
+  - `pipeline.offline` ← `OfflinePipeline` 统一转写流水线
+- 模块间绝对导入：`from funclip_pro.core.x import Y`，禁止相对导入越级。
+- 红线（派发子智能体必带）：numpy 锁 1.26.4；时间戳 ms；`_run_inference` 返回四元组；`powerset.cpu()` 在 `to_multilabel` 前；`apply_dll_patch()` 保活；零硬编码盘符。
