@@ -1,0 +1,6 @@
+# FunClip-Pro 运行时配置（P0 试点）
+# 所有路径相对项目根，禁止写死 Windows 盘符绝对路径。
+device: cuda
+threads: null
+conda_root: null        # 留空则由 CONDA_PREFIX / CONDA_ROOT 推断
+model_base: model       # 模型根目录（相对项目根）

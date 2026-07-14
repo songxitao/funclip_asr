@@ -6,6 +6,13 @@
 与 Cam++ (speaker_engine.py) 配合使用：
   segmentation 负责"在哪里切"，Cam++ 负责"这段是谁"。
 """
+import sys
+import pathlib
+
+# P0 试点：把 src 加入路径以导入配置加载器（基于 __file__ 溯源，不写死盘符）
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
+from funclip_pro.config.loader import resolve_model_path
+
 import logging
 import os
 import numpy as np
@@ -15,7 +22,7 @@ from pyannote.audio import Model
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEG_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\segmentation-3.0"
+DEFAULT_SEG_MODEL_DIR = resolve_model_path("models/damo/segmentation-3.0")
 
 # segmentation-3.0 的配置参数（来自 config.yaml）
 _CHUNK_DURATION_SEC = 10.0

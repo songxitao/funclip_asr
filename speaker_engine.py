@@ -19,6 +19,13 @@ speaker_engine.py — 基于 Cam++ (speech_campplus_sv) 的说话人向量提取
   - 输入为 16k 单声道 float waveform
   - 参考自本项目 funclip/asr1.py 的 SpeakerDiarizer 离线聚类实现
 """
+import sys
+import pathlib
+
+# P0 试点：把 src 加入路径以导入配置加载器（基于 __file__ 溯源，不写死盘符）
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
+from funclip_pro.config.loader import resolve_model_path
+
 import logging
 from typing import List, Optional, Tuple, Union
 
@@ -29,7 +36,7 @@ from sklearn.metrics.pairwise import cosine_distances
 logger = logging.getLogger("ASRService.Speaker")
 
 # 默认说话人模型路径（damo 仓库，本地已下好权重）
-DEFAULT_SPK_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\speech_campplus_sv_zh-cn_16k-common"
+DEFAULT_SPK_MODEL_DIR = resolve_model_path("models/damo/speech_campplus_sv_zh-cn_16k-common")
 
 # 过短片段无法提取稳定向量（约 0.1s @16k）
 _MIN_SAMPLES = 1600
