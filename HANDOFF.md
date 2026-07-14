@@ -17,7 +17,9 @@
 
 - **Continues from**: [2026-07-14-025842-srt-output-merge-vad-bound.md](./2026-07-14-025842-srt-output-merge-vad-bound.md)
   - Previous title: SRT 输出 + 相邻同说话人合并 + VAD 段内合并限制
-- **Supersedes**: None
+- **P0 试点收尾（已接手完成）**：[2026-07-14-152144-p0-path-decoupling-verified.md](./2026-07-14-152144-p0-path-decoupling-verified.md) — 该副本内容已过时（仍写"服务层未解耦"），**已 Superseded，可删**。
+- **P1 接手对接文档（下一个智能体必读）**：[2026-07-14-162727-p0-complete-p1-handoff.md](./2026-07-14-162727-p0-complete-p1-handoff.md) — P0 已完成证据 + P1 算法 SDK 化任务/映射/门禁/红线。
+- **Supersedes**: None（主 handoff 持续有效）
 
 ## Current State Summary
 
@@ -91,7 +93,7 @@
 - [x] **P0 收尾（解耦在服务层生效，满足 spec L21）**：`asr_onnx_service.py`（6 处 `*_MODEL_DIR` + 顶部 DLL 裸补丁→`apply_dll_patch()`）与 `app_control.py`（`CONDA_ROOT`/`OFFLINE_PYTHON` 走 `load_config()`/环境变量推断）已全部消费 `config.loader`。服务层与启动层零绝对路径硬编码，达成 spec L21。
 - [x] **P0 复测门禁（服务接线后必跑）**：用 8003 独立端口起 feature 分支服务（内存改端口/URL，未碰 `ali_der_eval.py` 源码），POST 音频重跑 DER（`R8002_M8002 seg_clustering`）。服务**真正走动态路径**，DER = **14.60% ≤ 14.85%±0.06%，PASS 无回归**。
 - [ ] **合入 main**：P0（含收尾）全部门禁通过后，将 `refactor/p0-path-decoupling-pilot` 合入 main。建议先合 main 再开 P1 分支（见 Blockers）。
-- [ ] **P1 算法下沉**：将 ASR 封装/聚类/对齐/SRT/OfflinePipeline 迁移到 `src/funclip_pro/`，FastAPI 只做薄路由（spec L48-58）。P1 不动算法逻辑，保持等价。
+- [ ] **P1 算法下沉（SDK 化）**：将 ASR 封装/聚类/对齐/SRT/OfflinePipeline 迁移到 `src/funclip_pro/`（core/ utils/ pipeline/ 子包），FastAPI 只做薄路由（spec L48-58）。P1 不动算法逻辑，保持等价。**接手前必读对接文档**：[2026-07-14-162727-p0-complete-p1-handoff.md](./2026-07-14-162727-p0-complete-p1-handoff.md)。
 
 ## Immediate Next Steps
 
@@ -168,3 +170,11 @@
 ---
 
 **Security Reminder**: Before finalizing, run `validate_handoff.py` to check for accidental secret exposure.
+
+## Suggested Skills（下一个智能体应调用）
+
+- `.agents/skills/to-spec` — P1 若需新增/修订 spec 时遵循
+- `.agents/skills/implement` — 实现下沉：TDD + 末尾 code-review + 提交当前分支
+- `.agents/skills/tdd` — 预对齐 seam 再写测试
+- `.agents/skills/code-review` — Standards/Spec 双轴自审
+- `.agents/skills/handoff` — P1 完成后再写接手 handoff
