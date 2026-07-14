@@ -5,7 +5,7 @@ import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
-from asr_onnx_service import SenseVoiceSmall
+from funclip_pro.core import SenseVoiceSmall
 
 def test_batch_decode_multi():
     model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall-ONNX"

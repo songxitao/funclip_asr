@@ -16,7 +16,7 @@ import tempfile
 import numpy as np
 import pytest
 
-from asr_onnx_service import (
+from funclip_pro.core.asr import (
     SHORT_AUDIO_MS,
     _cheap_trim,
     _select_engine,

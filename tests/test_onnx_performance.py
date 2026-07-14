@@ -30,8 +30,8 @@ torch.set_num_threads(6)
 sys.path.append(r"E:\project\funclip-pro")
 sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
 
-# 直接从 asr_onnx_service 导入我们已经重构好的 SenseVoiceSmall 类
-from asr_onnx_service import SenseVoiceSmall
+# 直接从 funclip_pro.core 导入我们已经重构好的 SenseVoiceSmall 类
+from funclip_pro.core import SenseVoiceSmall
 from funasr import AutoModel
 
 def run_pipeline(model, vad_model, audio_path, limit_segments=10):
