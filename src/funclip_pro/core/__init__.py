@@ -13,6 +13,10 @@ from .asr import (
     load_models,
 )
 from .tokenization import CharTokenizer
+from .alignment import (
+    _assign_clauses_to_speakers,
+    _assign_clauses_to_speakers_seamless,
+)
 
 __all__ = [
     "SegmentationEngine",
@@ -23,4 +27,6 @@ __all__ = [
     "SherpaSenseVoice",
     "load_models",
     "CharTokenizer",
+    "_assign_clauses_to_speakers",
+    "_assign_clauses_to_speakers_seamless",
 ]
