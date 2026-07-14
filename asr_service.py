@@ -1,4 +1,5 @@
 import os
+import sys
 import psutil
 
 # 硬锁定 CPU 物理核心至前 6 个大核心 [0, 1, 2, 3, 4, 5]
@@ -12,18 +13,29 @@ os.environ["OMP_NUM_THREADS"] = "6"
 os.environ["MKL_NUM_THREADS"] = "6"
 os.environ["OPENBLAS_NUM_THREADS"] = "6"
 
+# 路径解耦：统一由 config.loader 解析模型目录，零硬编码盘符/绝对路径。
+_src_root = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.join(_src_root, "src")
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
 import torch
 torch.set_num_threads(6)
 
 import time
 import tempfile
 import asyncio
-import re
 import logging
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from funasr import AutoModel
 import uvicorn
+
+# 路径解耦：复用 core.asr 已下沉的标签清洗正则与 VAD 段合并工具，移除根目录副本
+from funclip_pro.config.loader import resolve_model_path, apply_dll_patch
+from funclip_pro.core.asr import _LABEL_RE, _merge_vad_segments
+
+apply_dll_patch()
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -48,9 +60,9 @@ MAX_FILE_SIZE = 50 * 1024 * 1024      # 50MB 内存防线
 @app.on_event("startup")
 def load_models():
     global MODEL, VAD_MODEL, PUNC_MODEL
-    model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall"
-    vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
-    punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+    model_path = str(resolve_model_path("models/iic/SenseVoiceSmall"))
+    vad_path = str(resolve_model_path("models/damo/speech_fsmn_vad_zh-cn-16k-common-pytorch"))
+    punc_path = str(resolve_model_path("models/damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"))
     
     logger.info("正在 GPU (CUDA) 上加载 ASR 和 VAD 模型，并载入标点模型...")
     try:
@@ -97,8 +109,8 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
             res = MODEL.generate(input=audio_path, cache={}, language="auto", use_itn=True)
             if res and len(res) > 0:
                 raw_text = res[0].get('text', '').strip()
-                # 过滤情绪/事件富文本标签
-                clean_text = re.sub(r"<\|.*?\|>", "", raw_text).strip()
+                # 过滤情绪/事件富文本标签（复用 core.asr._LABEL_RE）
+                clean_text = _LABEL_RE.sub("", raw_text).strip()
                 return clean_text
             return ""
         else:
@@ -112,22 +124,7 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
             vad_out = VAD_MODEL.generate(input=audio_path, batch_size_s=5000, max_single_segment_time=60000)
             raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, len(audio)/16*1000]]
             
-            # 3. 合并小静音切片，保证每段大约 8 秒以内
-            def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
-                if not segments: return []
-                merged = []
-                curr_start, curr_end = segments[0]
-                for next_start, next_end in segments[1:]:
-                    gap = next_start - curr_end
-                    duration = (curr_end - curr_start) + (next_end - next_start)
-                    if gap < max_gap_ms and duration < max_duration_ms:
-                        curr_end = next_end 
-                    else:
-                        merged.append([curr_start, curr_end]) 
-                        curr_start, curr_end = next_start, next_end
-                merged.append([curr_start, curr_end])
-                return merged
-                
+            # 3. 合并小静音切片，保证每段大约 8 秒以内（复用 core.asr._merge_vad_segments）
             opt_segs = _merge_vad_segments(raw_segs)
             
             # 4. 切出 chunks = []
@@ -150,7 +147,7 @@ def _run_inference(audio_path: str, vad_split: bool = False) -> str:
             if res:
                 for item in res:
                     raw = item.get('text', '').strip()
-                    clean = re.sub(r"<\|.*?\|>", "", raw).strip()
+                    clean = _LABEL_RE.sub("", raw).strip()
                     if clean:
                         texts.append(clean)
             raw_text = "".join(texts)
