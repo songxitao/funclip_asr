@@ -1,5 +1,7 @@
 # Handoff: P0 路径解耦试点 — 已验证通过（DER 无回归）
 
+> **P1 算法 SDK 化已完成**（分支 `refactor/p1-algo-packaging`，W1-W5 已提交：core/utils 下沉 + OfflinePipeline + 薄路由 + 测试门禁；双轴自审无红线违反）。接手/等价性证据/DER 现状/待修项详见 [.claude/handoffs/2026-07-14-p1-complete-handoff.md](./.claude/handoffs/2026-07-14-p1-complete-handoff.md)。
+
 ## Session Metadata
 - Created: 2026-07-14 15:21:44
 - Project: E:\project\funclip-pro
