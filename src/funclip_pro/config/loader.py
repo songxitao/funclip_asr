@@ -6,7 +6,7 @@
 设计约束（来自 P0 spec / AGENTS.md）：
   - PROJECT_ROOT 由本文件 __file__ 向上溯源得到，绝不写死盘符。
   - PyYAML 为可选依赖：沙箱无网络 / 无 yaml 时回退内置 DEFAULTS。
-  - apply_dll_patch 仅做降级容错：目录不存在或 add_dll_directory 失败只 warning。
+  - apply_dll_patch 仅做降级容错：目录不存在或操作失败只 warning（add_dll_directory + PATH 前置双机制）。
 """
 import logging
 import os
@@ -80,8 +80,13 @@ def apply_dll_patch() -> None:
     """Windows 平台补丁：把深度学习库的 DLL 目录加入搜索路径。
 
     等价抽取自 asr_onnx_service.py / tests/test_onnx_gpu.py 顶部的
-    os.add_dll_directory 逻辑，但改为通用、容错实现：目录不存在或
-    add_dll_directory 失败仅 warning，不 raise。非 Windows 直接安全返回。
+    DLL 点亮逻辑（os.add_dll_directory + os.environ["PATH"] 前置拼接），
+    改为通用、容错实现：目录不存在或操作失败仅 warning，不 raise。
+    非 Windows 直接安全返回。
+
+    双机制保留等价点亮：
+      - os.add_dll_directory：现代 Windows DLL 搜索路径（主机制）
+      - os.environ["PATH"] 前置：兼容旧式 LoadLibrary 解析（冗余保底）
     """
     if sys.platform != "win32":
         return
@@ -105,3 +110,8 @@ def apply_dll_patch() -> None:
             os.add_dll_directory(str(d))
         except Exception as e:  # noqa: BLE001 - 降级容错
             logger.warning("add_dll_directory 失败（已跳过）: %s -> %s", d, e)
+        # 等价保留原 asr_onnx_service 的 PATH 前置点亮，兼容旧式 DLL 解析
+        try:
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+        except Exception:  # noqa: BLE001 - 降级容错
+            pass

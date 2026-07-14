@@ -9,29 +9,15 @@ except Exception as e:
 for env_var in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"]:
     os.environ[env_var] = "6"
 
-# 2. 动态添加 DLL 搜索目录以点亮 onnxruntime GPU 推理
-ctranslate2_dll_path = r"E:\conda\envs\asr_ui_env\Lib\site-packages\ctranslate2"
-if os.path.exists(ctranslate2_dll_path):
-    try:
-        os.add_dll_directory(ctranslate2_dll_path)
-    except Exception:
-        os.environ["PATH"] += os.pathsep + ctranslate2_dll_path
-
-# 强力点亮 onnxruntime GPU 推理：将 nvidia\cudnn\bin、onnxruntime\capi 和 torch\lib 优先加入 PATH 与 DLL 目录
-cudnn_bin = r"E:\conda\envs\asr_ui_env\Lib\site-packages\nvidia\cudnn\bin"
-capi_path = r"E:\conda\envs\asr_ui_env\Lib\site-packages\onnxruntime\capi"
-torch_lib = r"E:\conda\envs\asr_ui_env\Lib\site-packages\torch\lib"
-
-extra_paths = [cudnn_bin, capi_path, torch_lib]
-for path in extra_paths:
-    if os.path.exists(path):
-        os.environ["PATH"] = path + os.pathsep + os.environ["PATH"]
-        try:
-            os.add_dll_directory(path)
-        except Exception:
-            pass
-
+# 2. DLL 补丁：动态点亮 onnxruntime GPU 推理（路径解耦，统一由 loader.apply_dll_patch 处理）
 import sys
+_src_root = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.join(_src_root, "src")
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+from funclip_pro.config.loader import resolve_model_path, apply_dll_patch
+apply_dll_patch()  # 必须在首次加载 torch / onnxruntime 之前点亮 DLL 搜索目录
+
 import json
 import time
 import tempfile
@@ -53,8 +39,8 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-# 添加 SenseVoiceSmall 目录到 PYTHONPATH
-sys.path.append(r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall")
+# 添加 SenseVoiceSmall 目录到 PYTHONPATH（路径解耦：由 resolve_model_path 解析）
+sys.path.append(str(resolve_model_path("models/iic/SenseVoiceSmall")))
 from utils.model_bin import SenseVoiceSmallONNX
 
 from sherpa_engine import SherpaSenseVoice
@@ -210,14 +196,14 @@ def strip_punctuation(s: str) -> str:
 @app.on_event("startup")
 def load_models():
     global MODEL, VAD_MODEL, PUNC_MODEL
-    model_path = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall-ONNX"
-    vad_path = r"E:\project\funclip-pro\model\models\damo\speech_fsmn_vad_zh-cn-16k-common-pytorch"
-    punc_path = r"E:\project\funclip-pro\model\models\damo\punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+    model_path = str(resolve_model_path("models/iic/SenseVoiceSmall-ONNX"))
+    vad_path = str(resolve_model_path("models/damo/speech_fsmn_vad_zh-cn-16k-common-pytorch"))
+    punc_path = str(resolve_model_path("models/damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"))
     
     logger.info("正在加载 Sherpa-ONNX ASR 模型、VAD(优先GPU) 和 CPU 标点模型...")
     try:
         # 1. 加载 ASR（Sherpa-ONNX INT8 后端，CPU 终极提速方案，已评测验证）
-        SHERPA_MODEL_DIR = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmallOnnx"
+        SHERPA_MODEL_DIR = str(resolve_model_path("models/iic/SenseVoiceSmallOnnx"))
         MODEL = SherpaSenseVoice(
             model_dir=SHERPA_MODEL_DIR,
             num_threads=6,
@@ -279,7 +265,7 @@ def _post_punc(raw_text: str) -> str:
 SHORT_AUDIO_MS = 5000           # 短音频阈值(ms)：<= 此值走廉价 trim 直解
 SHORT_TRIM_TOP_DB = 40          # librosa.effects.trim 的 top_db（保留轻语音）
 TRIM_PAD_MS = 100               # trim 边界缓冲(ms)，防削字
-TORCH_MODEL_DIR = r"E:\project\funclip-pro\model\models\iic\SenseVoiceSmall"
+TORCH_MODEL_DIR = str(resolve_model_path("models/iic/SenseVoiceSmall"))
 
 # PyTorch-GPU 引擎惰性加载（锁内构建，保证集成测试启动不超时）
 _TORCH_LOCK = threading.Lock()
@@ -300,7 +286,7 @@ def _get_torch_model():
 # Cam++ 说话人模型惰性加载（仅在 diarize=True 时触发；优先 CUDA 提速，失败回退 CPU）
 _SPK_LOCK = threading.Lock()
 SPK_MODEL = None
-SPK_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\speech_campplus_sv_zh-cn_16k-common"
+SPK_MODEL_DIR = str(resolve_model_path("models/damo/speech_campplus_sv_zh-cn_16k-common"))
 
 def _get_spk_model():
     """在锁内惰性构建 Cam++ 说话人模型；首次 diarize 请求才加载。优先 CUDA。"""
@@ -319,7 +305,7 @@ def _get_spk_model():
 # Segmentation-3.0 说话人分割模型惰性加载
 _SEG_LOCK = threading.Lock()
 SEG_MODEL = None
-SEG_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\segmentation-3.0"
+SEG_MODEL_DIR = str(resolve_model_path("models/damo/segmentation-3.0"))
 
 def _get_seg_model():
     """在锁内惰性构建 Segmentation 模型；首次 seg_clustering 请求才加载。优先 CUDA。"""

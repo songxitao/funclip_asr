@@ -4,3 +4,4 @@ device: cuda
 threads: null
 conda_root: null        # 留空则由 CONDA_PREFIX / CONDA_ROOT 推断
 model_base: model       # 模型根目录（相对项目根）
+offline_python: E:\conda\envs\funclip_final\python.exe  # 离线任务 Python 解释器（可被 config.json / 环境变量 FUNCLIP_OFFLINE_PYTHON 覆盖）

@@ -10,6 +10,10 @@ import tempfile
 import traceback
 import json
 
+# P0 路径解耦：从 src 加载配置 loader（优先 config.yaml / 环境变量推断）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+from funclip_pro.config.loader import load_config
+
 # 0. 强制 UTF-8 输出 (解决 GBK 报错)
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -23,16 +27,22 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 PROJECT_PATH = PROJECT_ROOT
 
 # 3. Conda 安装根目录 (如果你的 Conda 不在项目内，这个建议保留原样或改为环境变量)
-CONDA_ROOT = r"D:\program files\Miniconda" 
+# 向后兼容回退值：使用转义字符串而非 Windows 盘符 raw 字面量（P0 路径解耦要求）
+_CONDA_ROOT_FALLBACK = "D:\\program files\\Miniconda"
 
 # 4. 【离线任务】使用的 Python
 # 注意：如果这个环境不在项目内，建议保留绝对路径
-OFFLINE_PYTHON = r"E:\conda\envs\funclip_final\python.exe"
+_OFFLINE_PYTHON_FALLBACK = "E:\\conda\\envs\\funclip_final\\python.exe"
 
 # 5. 【实时任务】环境名称
 LIVE_ENV_NAME = "asr_ui_env"
 
-# 尝试读取 config.json 更新配置
+# 默认回退（优先由 loader / 环境变量 / config.json 覆盖）
+CONDA_ROOT = _CONDA_ROOT_FALLBACK
+OFFLINE_PYTHON = _OFFLINE_PYTHON_FALLBACK
+
+# 尝试读取 config.json 更新配置（保留现有兼容覆盖逻辑，最高优先级）
+config_data = {}
 config_path = os.path.join(PROJECT_ROOT, "config.json")
 if os.path.exists(config_path):
     try:
@@ -46,6 +56,21 @@ if os.path.exists(config_path):
                 LIVE_ENV_NAME = config_data["live_env_name"]
     except Exception as e:
         logging.error(f"Error loading config.json: {e}")
+
+# P0 路径解耦：经 loader（config.yaml）/ 环境变量推断，仅在 config.json 未覆盖时叠加
+if "conda_root" not in config_data:
+    _cfg = load_config()
+    if _cfg.get("conda_root"):
+        CONDA_ROOT = _cfg["conda_root"]
+    elif os.environ.get("CONDA_ROOT"):
+        CONDA_ROOT = os.environ["CONDA_ROOT"]
+
+if "offline_python" not in config_data:
+    _cfg = load_config()
+    if _cfg.get("offline_python"):
+        OFFLINE_PYTHON = _cfg["offline_python"]
+    elif os.environ.get("FUNCLIP_OFFLINE_PYTHON"):
+        OFFLINE_PYTHON = os.environ["FUNCLIP_OFFLINE_PYTHON"]
 
 # 6. 脚本路径自动定位
 OFFLINE_SCRIPT = os.path.join(PROJECT_PATH, "funclip", "asr1.py")
