@@ -1,6 +1,8 @@
 # Handoff: P0 路径解耦试点 — 已验证通过（DER 无回归）
 
-> **P1 算法 SDK 化已完成**（分支 `refactor/p1-algo-packaging`，W1-W5 已提交：core/utils 下沉 + OfflinePipeline + 薄路由 + 测试门禁；双轴自审无红线违反）。接手/等价性证据/DER 现状/待修项详见 [.claude/handoffs/2026-07-14-p1-complete-handoff.md](./.claude/handoffs/2026-07-14-p1-complete-handoff.md)。
+> ⚠️ **当前活跃任务（2026-07-14 18:33 暂停待重组）**：DER 测试门禁。测试集已纠正为 **Ali（`testset/ali_near_prep`）**，全量评测因 8002 服务中途挂掉已暂停，等用户重新组织测试任务。完整上下文 / 坑 / 下一步见 [.claude/handoffs/2026-07-14-183317-der-ali-der-test-pause.md](./.claude/handoffs/2026-07-14-183317-der-ali-der-test-pause.md)。
+>
+> **P1 算法 SDK 化已完成**（分支 `refactor/p1-algo-packaging`，W1-W6 已提交：core/utils/pipeline 下沉 + OfflinePipeline + 薄路由 + 测试门禁 + 双轴自审；无红线违反）。接手/等价性证据/DER 现状/待修项详见 [.claude/handoffs/2026-07-14-p1-complete-handoff.md](./.claude/handoffs/2026-07-14-p1-complete-handoff.md)。
 
 ## Session Metadata
 - Created: 2026-07-14 15:21:44
