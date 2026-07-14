@@ -1,5 +1,5 @@
 import numpy as np
-from speaker_engine import segment_sliding_window
+from funclip_pro.core.speaker import segment_sliding_window
 
 
 def test_sliding_window_basic():
@@ -34,7 +34,7 @@ def test_sliding_window_tail_partial():
 
 # ---- cluster_sliding 单测（mock extract_embedding，不加载 Cam++ 模型）----
 from unittest.mock import patch
-from speaker_engine import CampPlusSpeaker
+from funclip_pro.core.speaker import CampPlusSpeaker
 
 
 def test_cluster_sliding_merges_same_speaker():

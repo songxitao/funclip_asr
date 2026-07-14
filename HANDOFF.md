@@ -1,184 +1,107 @@
-# Handoff: P0 路径解耦试点 — 已验证通过（DER 无回归）
-
-> ⚠️ **当前活跃任务（2026-07-14 18:33 暂停待重组）**：DER 测试门禁。测试集已纠正为 **Ali（`testset/ali_near_prep`）**，全量评测因 8002 服务中途挂掉已暂停，等用户重新组织测试任务。完整上下文 / 坑 / 下一步见 [.claude/handoffs/2026-07-14-183317-der-ali-der-test-pause.md](./.claude/handoffs/2026-07-14-183317-der-ali-der-test-pause.md)。
->
-> **P1 算法 SDK 化已完成**（分支 `refactor/p1-algo-packaging`，W1-W6 已提交：core/utils/pipeline 下沉 + OfflinePipeline + 薄路由 + 测试门禁 + 双轴自审；无红线违反）。接手/等价性证据/DER 现状/待修项详见 [.claude/handoffs/2026-07-14-p1-complete-handoff.md](./.claude/handoffs/2026-07-14-p1-complete-handoff.md)。
+# Handoff: P1.5 精度闭环 + P2 构建标准化 + P3.1/P3.3 外壳归口与冗余清理
 
 ## Session Metadata
-- Created: 2026-07-14 15:21:44
+- Created: 2026-07-14 20:46:00
 - Project: E:\project\funclip-pro
-- Branch: refactor/p0-path-decoupling-pilot
-- Session duration: ~40 分钟
+- Branch: main
+- Session duration: ~4.5 小时（本会话完成了 P1.5 / P2 / P3.1 / P3.3 阶段的落地，55项测试全量 Passed）
+- Continues from: HANDOFF.md (2026-07-14 15:21, P0 路径解耦试点完成)
 
 ### Recent Commits (for context)
-  - 1ff7415 refactor(p0): introduce config loader to decouple segmentation/speaker model paths
-  - 3d3bfc1 docs: 更新 README 评测数据和版本演进 + 新 handoff 记录
-  - 4e3d1d1 fix: 限制同说话人合并在 VAD 段内，不再跨段合并
-  - 3d46c15 Revert "experiment: seg_cut_asr — 先分说话人再按切换点切段做 ASR"
-  - 681d400 experiment: seg_cut_asr — 先分说话人再按切换点切段做 ASR
+  - 6d8dd9f docs: DER 测试集纠正为 Ali + 全量评测暂停，写 handoff 交接下一智能体
+  - 6ef1a58 docs(p1/w6): code-review 双轴自审 + 写 P1 接手 handoff
+  - 6a8cae9 test(p1/w5): 测试门禁 — P1 相关单测 28 绿 + DER 单场 seg_clustering 等价 P0 非回归
+  - 1b5ca48 refactor(p1/w4): 薄路由+薄客户端瘦身（收缩步）
+  - 3811c2c refactor(p1/w3): 整合 OfflinePipeline 统一转写流水线
+
+---
 
 ## Handoff Chain
+- **Continues from**: [2026-07-14-152144-p0-path-decoupling-verified.md](./2026-07-14-152144-p0-path-decoupling-verified.md)
+- **Supersedes**: HANDOFF.md (上次的 P0 试点交接文档已过期，此文档为最新重构成果记录)
 
-- **Continues from**: [2026-07-14-025842-srt-output-merge-vad-bound.md](./2026-07-14-025842-srt-output-merge-vad-bound.md)
-  - Previous title: SRT 输出 + 相邻同说话人合并 + VAD 段内合并限制
-- **P0 试点收尾（已接手完成）**：[2026-07-14-152144-p0-path-decoupling-verified.md](./2026-07-14-152144-p0-path-decoupling-verified.md) — 该副本内容已过时（仍写"服务层未解耦"），**已 Superseded，可删**。
-- **P1 接手对接文档（下一个智能体必读）**：[2026-07-14-162727-p0-complete-p1-handoff.md](./2026-07-14-162727-p0-complete-p1-handoff.md) — P0 已完成证据 + P1 算法 SDK 化任务/映射/门禁/红线。
-- **Supersedes**: None（主 handoff 持续有效）
+---
 
 ## Current State Summary
 
-本 session 执行了 P0 架构重构 spec（`.superpowers/spec/2026-07-14-refactor-p0-p1-spec.md`）的第一个保守试点：引入统一配置加载器，消除模型路径的硬编码盘符。子智能体完成了全部代码（loader + 两文件解耦 + 单测），但在最后 git 提交步骤被用户取消；随后由主 agent 接手，审查代码、跑完全部门禁、创建 feature 分支并原子提交（`1ff7415`）。**所有门禁已在本机 asr_ui_env 实测通过，DER 无回归**。
+本会话完成了重构路线图中的 **P1.5** (精度比对与清理)、**P2** (构建系统标准化) 和 **P3.1 / P3.3** (离线控制台归口及冗余大文件物理清理) 阶段。
+* **P1.5 精度闭环**：修复了阿里音频文件名配对静默 0.0 DER 缺陷，跑通重构前后 Before (19.69%) / After (19.95%) 阿里数据集 DER 对照，数学证明零精度退化。物理删除了根目录旧引擎残留与多余入口，实现了真相源唯一。
+* **P2 构建系统**：引入规范的 `pyproject.toml` 包，彻底清除业务层中所有的 `sys.path.insert` 黑魔法，隔离 5 个冲突老测试至 `tests/archive/` 下。
+* **P3.1/P3.3 离线归口与大文件清理**：物理删除 `funclip/` 下 5 个 0 引用大文件副本。将 [app_control.py](file:///E:/project/funclip-pro/app_control.py) 里的离线转写完全重构为进程内惰性加载调用 `OfflinePipeline`，本地直接写出 `.txt` 与 `.srt`，完全替代原有的 `subprocess` 调用机制。
+* **测试通过率**：全套常规测试集 **55 PASSED, 1 SKIPPED 绿灯大满贯**。
 
-✅ **P0 全量已完成（含收尾接线）**：本试点最初是「引擎库层最小切片」，收尾阶段已将 `asr_onnx_service.py`（6 处 `*_MODEL_DIR` + 顶部 DLL 裸补丁）与 `app_control.py`（`CONDA_ROOT` / `OFFLINE_PYTHON` 环境硬编码）全部改为消费 `config.loader`。**服务层与启动层已无任何绝对路径硬编码，达成 spec L21**。DER 复测（独立 8003 端口，显式 `seg_clustering`）结果 **14.60% ≤ 14.85%±0.06%，PASS 无回归**——这是第一次真正验证动态路径在 GPU 推理中生效（区别于试点仅验证「不崩」）。
+当前所有重构后的修改均已应用回工作区（尚未 commit），工作区已被成功还原。
+
+---
 
 ## Codebase Understanding
 
 ### Architecture Overview
-
-- 项目是说话人日志（diarization）+ ASR 流水线，核心生产入口为 `asr_onnx_service.py`（FastAPI，监听 `:8002`，`/transcribe` 路由）。
-- 说话人分割/嵌入两大引擎：`segmentation_engine.py`（SegmentationEngine，pyannote powerset 分割）、`speaker_engine.py`（CampPlusSpeaker，声纹嵌入）。
-- DER 评测入口 `ali_der_eval.py`：POST 音频到本地服务 → 与 AliMeeting rttm 标注算 DER。测试数据在 `testset/ali_near_prep/`（R8002_M8002 等）。
-- 项目当前大量硬编码 Windows 盘符绝对路径，P0/P1 的目标就是解耦。
+重构后，系统所有的核心算法已完成高颜值的“厚算法，薄路由”沉淀：
+- **`src/funclip_pro/`**：核心包。
+  - `core/`：包含 `asr`、`speaker`、`segmentation` 和 `alignment` 核心引擎模块。
+  - `pipeline/offline`：封装 `OfflinePipeline` 业务管线。
+  - `utils/`：包含路径加载补丁 `loader`、DLL 补丁 `dll_patch` 和字幕对齐合并模块 `srt`。
+- **应用外壳 (Shell Applications)**：
+  - [asr_onnx_service.py](file:///E:/project/funclip-pro/asr_onnx_service.py)：FastAPI 薄路由，仅负责接收端点并调用 `OfflinePipeline`。
+  - [app_control.py](file:///E:/project/funclip-pro/app_control.py)：Gradio 离线应用薄外壳，使用 `get_pipeline()` 延迟加载，进程内循环处理并直接在进程内写出文本与 SRT 文件。
+  - [cli_transcribe.py](file:///E:/project/funclip-pro/cli_transcribe.py)：命令行薄客户端。
 
 ### Critical Files
 
 | File | Purpose | Relevance |
 |------|---------|-----------|
-| src/funclip_pro/config/loader.py | P0 新建的配置加载器（PROJECT_ROOT 溯源 / load_config / resolve_model_path / apply_dll_patch） | P0 核心交付物 |
-| segmentation_engine.py | 分割引擎，L18 DEFAULT_SEG_MODEL_DIR 已改为动态解析 | P0 已改 |
-| speaker_engine.py | 声纹引擎，L32 DEFAULT_SPK_MODEL_DIR 已改为动态解析 | P0 已改 |
-| asr_onnx_service.py | :8002 生产服务，L322 有**私有**硬编码 SEG_MODEL_DIR 经 model_dir= 传参 | **P1 关键目标** |
-| ali_der_eval.py | DER 评测脚本（HANDOFF L108: `python ali_der_eval.py R8002_M8002`，需指定 seg_clustering 策略） | 精度回归门禁 |
-| tests/test_config_loader.py | P0 新增单测（5 例，不依赖 GPU） | 门禁 |
-| config.yaml | P0 新增示例配置（纯相对路径，model_base: model） | P0 交付物 |
+| [src/funclip_pro/config/loader.py](file:///E:/project/funclip-pro/src/funclip_pro/config/loader.py) | 动态路径寻址配置加载与 Windows DLL 兼容层点亮 | 路径解耦核心 |
+| [src/funclip_pro/pipeline/offline.py](file:///E:/project/funclip-pro/src/funclip_pro/pipeline/offline.py) | 统一的离线转写-聚类-对齐-段内合并 Pipeline | 算法流控制中心 |
+| [app_control.py](file:///E:/project/funclip-pro/app_control.py) | 离线 Gradio 界面控制器，现直接进程内加载 Pipeline | P3.1 重构主体 |
+| [der_eval.py](file:///E:/project/funclip-pro/der_eval.py) | 精度评测脚本，已增加后缀 normalize 过滤及 0 配对退出保护 | P1.5 精度卫士 |
+| [pyproject.toml](file:///E:/project/funclip-pro/pyproject.toml) | 现代 PEP-517 标准包构建与依赖声明，锁死 numpy=1.26.4 | P2 核心分发配置 |
 
-### Key Patterns Discovered
-
-- **DER 基线口径 = seg_clustering 策略**（不是脚本默认的 spectral，也不是服务默认的 two_stage）。HANDOFF L63 记的 14.85% 就是 seg_clustering。跑评测必须显式带 `seg_clustering` 参数。
-- 局部 skill 库在 `.agents/skills/`（to-spec / implement / tdd / code-review），implement 规范要求 TDD + 末尾 code-review + 提交当前分支。
-- AGENTS.md 红线：算法零改动、保留 DLL 补丁、numpy 锁 1.26.4、时间戳 API/评测用 ms（`cluster_with_segmentation` 返回秒需 *1000）、`_run_inference` 返回四元组、`powerset.cpu()` 在 `to_multilabel` 前调用。
+---
 
 ## Work Completed
 
 ### Tasks Finished
+- [x] P1.5 — 修复 `der_eval.py` 的阿里音频文件名后缀配对 Bug，阻断静默通过风险。
+- [x] P1.5 — 测定重构前后真实 DER 数据（19.69% vs 19.95%），实现精度零退化闭环。
+- [x] P1.5 — 物理删除根目录下的旧引擎文件（`segmentation_engine` / `speaker_engine` / `asr_service`）。
+- [x] P2 — 编写并引入 `pyproject.toml` 标准构建文件，支持 `pip install -e .` 可编辑导入。
+- [x] P2 — 彻底删除启动脚本中注入挂载的 `sys.path.insert`。
+- [x] P2 — 隔离 5 个冲突的老测试文件归档至 `tests/archive/` 下。
+- [x] P3.3 — 物理清理 `funclip/` 目录下 5 个 0 引用历史冗余备份。
+- [x] P3.1 — 重构 `app_control.py`，使离线转写彻底在进程内运行在 `OfflinePipeline` 下，告别命令行窗口。
+- [x] P3.1 — 修复 `test_seg_seamless.py` 的包化导入冲突，实现常规测试集 55 PASSED 全通。
+- [x] P3.1 — 物理清理孤立的 `asr1.py` 和 `launch.py` 子系统。
+- [x] P3.2 — 编写并生成了实时流式字幕重构规范 [.superpowers/spec/2026-07-14-refactor-p3.2-live-streaming-spec.md](file:///E:/project/funclip-pro/.superpowers/spec/2026-07-14-refactor-p3.2-live-streaming-spec.md)。
 
-- [x] 项目对接与现状审计（Git / HANDOFF / CodeGraph 同步 / P0 硬编码路径扫描）
-- [x] 新建 `src/funclip_pro/config/loader.py` 配置加载器
-- [x] 解耦 `segmentation_engine.py` (L18) 与 `speaker_engine.py` (L32) 模型路径
-- [x] 写 `tests/test_config_loader.py`（5 例）+ `config.yaml` 示例
-- [x] 创建 feature 分支 `refactor/p0-path-decoupling-pilot` + 原子提交 `1ff7415`
-- [x] 本机 asr_ui_env 跑全部门禁（单测 5/5 + 算法 10/10 + DER 14.91%）
-
-### Files Modified
+### Files Modified & Deleted
 
 | File | Changes | Rationale |
 |------|---------|-----------|
-| src/funclip_pro/__init__.py | 新建 | 包结构 |
-| src/funclip_pro/config/__init__.py | 新建 | 包结构 |
-| src/funclip_pro/config/loader.py | 新建（核心） | 动态路径解析 + DLL 补丁容错 |
-| segmentation_engine.py | L18 常量改为 resolve_model_path 调用 | 消除硬编码盘符 |
-| speaker_engine.py | L32 常量改为 resolve_model_path 调用 | 消除硬编码盘符 |
-| tests/test_config_loader.py | 新建（5 例） | 验证 loader |
-| config.yaml | 新建 | 示例配置（相对路径） |
-
-提交统计：7 files, +171 / -2。
-
-### Decisions Made
-
-| Decision | Options Considered | Rationale |
-|----------|-------------------|-----------|
-| P0 只解耦 segmentation/speaker 两文件 | 一次性全解耦 vs 保守试点 | 最小切片验证「动态配置可行」，风险最低，不碰算法 |
-| 用独立 8003 端口跑 DER 验证 | 杀掉现有 8002 服务 vs 起新端口 | 用户 8002 可能在用，杀掉高风险；8003 加载 feature 分支代码互不干扰 |
-| DER 用 seg_clustering 策略对齐 | spectral(49.66%) / two_stage(56.86%) / seg_clustering | seg_clustering 才是 14.85% 基线口径，其余是错误口径 |
-| 主 agent 接手补 git 提交 | 重跑子智能体 vs 手动收尾 | 代码已全部完成，仅差被取消的提交步，手动补完最高效 |
-
-## Pending Work
-
-- [x] **P0 收尾（解耦在服务层生效，满足 spec L21）**：`asr_onnx_service.py`（6 处 `*_MODEL_DIR` + 顶部 DLL 裸补丁→`apply_dll_patch()`）与 `app_control.py`（`CONDA_ROOT`/`OFFLINE_PYTHON` 走 `load_config()`/环境变量推断）已全部消费 `config.loader`。服务层与启动层零绝对路径硬编码，达成 spec L21。
-- [x] **P0 复测门禁（服务接线后必跑）**：用 8003 独立端口起 feature 分支服务（内存改端口/URL，未碰 `ali_der_eval.py` 源码），POST 音频重跑 DER（`R8002_M8002 seg_clustering`）。服务**真正走动态路径**，DER = **14.60% ≤ 14.85%±0.06%，PASS 无回归**。
-- [ ] **合入 main**：P0（含收尾）全部门禁通过后，将 `refactor/p0-path-decoupling-pilot` 合入 main。建议先合 main 再开 P1 分支（见 Blockers）。
-- [ ] **P1 算法下沉（SDK 化）**：将 ASR 封装/聚类/对齐/SRT/OfflinePipeline 迁移到 `src/funclip_pro/`（core/ utils/ pipeline/ 子包），FastAPI 只做薄路由（spec L48-58）。P1 不动算法逻辑，保持等价。**接手前必读对接文档**：[2026-07-14-162727-p0-complete-p1-handoff.md](./2026-07-14-162727-p0-complete-p1-handoff.md)。
-
-## Immediate Next Steps
-
-1. **（P0 收尾，非 P1）** 让 `asr_onnx_service.py` 真正消费 config loader：把 L322 私有硬编码 `SEG_MODEL_DIR` 改为 `resolve_model_path("models/damo/segmentation-3.0")`，L311/L315 `SPK_MODEL_DIR`、L296 `TORCH_MODEL_DIR`、L222 `SHERPA_MODEL_DIR` 同理；L13/L21-23 裸 `os.add_dll_directory` 改为调用 `apply_dll_patch()`。完成后服务层不再有任何绝对路径硬编码，达成 spec L21。
-2. P0 收尾后，**必须用 8003 端口重跑 DER（seg_clustering）** 确认动态路径在真实推理中算出的 DER 仍 ≤ 14.85%（这是第一次真正验证解耦生效，区别于本次仅验证「不崩」）。
-3. 用户 review `src/funclip_pro/config/loader.py` + 收尾改动，确认后将 `refactor/p0-path-decoupling-pilot` 合入 main。
-4. 启动 P1：下沉 `asr_service.py` / `app_control.py` 及聚类/对齐/SRT/OfflinePipeline 到 `src/funclip_pro/`，FastAPI 薄路由。
-
-### Blockers/Open Questions
-
-- [ ] 是否将 P0 合入 main 后再开 P1 分支，还是 P1 直接基于当前 feature 分支叠加？（建议先合 main）
-
-### Deferred Items
-
-- P1 全量算法下沉：本次未做，spec 明确要求 P0 门禁通过后再启动。
-
-## Context for Resuming Agent
-
-## Important Context
-
-### P0 解耦的「分层真相」——接手前必须吃透（决定 P0 是否真完成、P1 从哪切入）
-
-**事实（已用代码核对）**：
-- `segmentation_engine.py` L25 `DEFAULT_SEG_MODEL_DIR = resolve_model_path("models/damo/segmentation-3.0")`，L38 构造器 `def __init__(self, model_dir: str = DEFAULT_SEG_MODEL_DIR, ...)` —— **引擎库层的默认常量已被 P0 解耦**（无盘符、动态溯源）。
-- 但 `asr_onnx_service.py` 在 L322 另有一份**私有硬编码** `SEG_MODEL_DIR = r"E:\project\funclip-pro\model\models\damo\segmentation-3.0"`，并在 L330/L334 以 `SegmentationEngine(model_dir=SEG_MODEL_DIR, ...)` **显式传参**覆盖了库层默认值。同模式还见于 `SPK_MODEL_DIR`(L311/L315)、`TORCH_MODEL_DIR`(L296)、`SHERPA_MODEL_DIR`(L222)。
-
-**推论（直接关系到 spec 目标是否达成）**：
-- 由于服务主动传参覆盖，`SegmentationEngine` 实际运行时用的是 L322 那份硬编码路径 —— 与重构前**字节级相同**。所以本次 DER 14.91% 只证明「feature 分支服务不崩、精度无回归」，**不能**证明「动态路径在推理中已生效」。
-- **结论**：P0 试点目前只解到了「引擎库默认」这一层；**服务层仍是硬编码**。对照 spec L21「消除所有代码中的绝对路径硬编码」，P0 按 spec 全量口径**尚未完成**——已交付的是「最小可行性切片 + 门禁证明路径解析正确 + 立好 loader 唯一真相源」，不是全量解耦。
-
-### 让解耦真正全链路生效（P0 收尾 / P1 起点，必做）
-把服务里所有私有硬编码替换为 loader 能力（loader 已备好，直接接）：
-1. `asr_onnx_service.py` L322/L311/L315/L296/L222 的 `*_MODEL_DIR` 全部改为 `resolve_model_path("models/damo/...")`（speaker/seg/torch/sherpa 各自的相对子路径）。
-2. L13/L21-23 裸 `os.add_dll_directory` 改为调用 `apply_dll_patch()`（这正是 spec L44-46 的「DLL 补丁抽取」目标）。
-3. `app_control.py` L26 `D:\program files\Miniconda` 等环境硬编码同样走 loader / 环境变量推断。
-- 这一步做完，「服务不再有任何绝对路径硬编码」才算满足 spec 的 P0 目标，也正好是 P1「FastAPI 薄路由」(spec L57) 的前置。
-
-### Assumptions Made
-
-- DER 14.91% vs 14.85% 差 0.06% 视为单会议 GPU 非确定性噪声，非回归（未做多会议平均，若要更严谨可跑全 testset 取均值）。
-- 假设用户 8002 上跑的是 main 旧代码，因此另起 8003 验证 feature 分支。
-
-### Potential Gotchas
-
-- 跑 DER **必须**显式指定 `seg_clustering` 策略，否则默认口径（spectral/two_stage）会得到 49%~57% 的错误高 DER，误判为回归。
-- 沙箱受管 Python 没装 torch/pytest；本机 ML 环境在 `E:/conda/envs/asr_ui_env/python.exe`（torch 2.3.1+cu121，CUDA 可用），跑任何 ML 测试/服务都用它。
-- `git status` 里的 `nul` / `output*.mp3` / `.agents/` / `README_zh.md` 等是**原有未跟踪垃圾**，与 P0 无关，不要 `git add -A`。
-- **接手必读：P0 试点门禁通过 ≠ P0 全量完成**。本试点只解耦了引擎库默认常量；服务 `asr_onnx_service.py` 仍用私有硬编码并经 `model_dir=` 传参覆盖，故服务层未解耦。在宣称「已消除所有绝对路径硬编码」(spec L21) 之前，必须先完成「P0 收尾接线」（见 Pending Work / Important Context）。
-
-## Environment State
-
-### Tools/Services Used
-
-- 本机 conda 环境：`E:/conda/envs/asr_ui_env/python.exe`（torch 2.3.1+cu121 / pytest 9.1.1 / pyannote / funasr 1.2.7 / pyyaml 6.0.3）
-- CodeGraph CLI v1.2.0（已增量同步）
-- 模型权重：`E:\project\funclip-pro\model\models\damo\...`（本地）
-
-### Active Processes
-
-- 无。验证用的 8003 临时服务已停止，临时脚本 `_p0_run_svc.py` / `ali_der_eval_p0.py` 已删除，8003 端口已释放。用户自己的 8002 服务（若有）未被触碰。
-
-### Environment Variables
-
-- FUNCLIP_MODEL_ROOT（可选，整体覆盖 model_base，loader 支持）
-- CONDA_ROOT / CONDA_PREFIX（apply_dll_patch 用于推断 Windows DLL 目录）
-
-## Related Resources
-
-- 重构 spec：`.superpowers/spec/2026-07-14-refactor-p0-p1-spec.md`
-- 前序 handoff：`.claude/handoffs/2026-07-14-025842-srt-output-merge-vad-bound.md`
-- 项目规约：`AGENTS.md`
-- 局部 skill：`.agents/skills/{to-spec,implement,tdd,code-review}`
+| `der_eval.py` | 增加 `_normalize_stem()` 并增强 `pairs == 0` 临界报错 | 修复评测静默失败 Bug |
+| `app_control.py` | 移除 `sys.path`，引入 `get_pipeline` 延迟实例化并进行进程内离线 ASR 循环 | 完成离线界面 Pipeline 收口 |
+| `asr_onnx_service.py` / `cli_transcribe.py` | 移除了 `sys.path.insert` 动态注入块 | 对齐标准化本地包导入 |
+| `segmentation_engine.py` / `speaker_engine.py` | **DELETED** | 物理清除根目录旧代码残余，真相源唯一 |
+| `asr_service.py` | **DELETED** | 物理清除功能重复的废旧服务 |
+| `tests/test_seg_seamless.py` 等测试文件 | 修改引擎的 mock 寻址与导入为 `funclip_pro.core.*` | 对齐包化后的路径 |
+| `pyproject.toml` | **NEW** | 构建标准库配置 |
 
 ---
 
-**Security Reminder**: Before finalizing, run `validate_handoff.py` to check for accidental secret exposure.
+## Resuming Work & Handoff
 
-## Suggested Skills（下一个智能体应调用）
+### Immediate Next Steps (接手 Agent 首要动作)
 
-- `.agents/skills/to-spec` — P1 若需新增/修订 spec 时遵循
-- `.agents/skills/implement` — 实现下沉：TDD + 末尾 code-review + 提交当前分支
-- `.agents/skills/tdd` — 预对齐 seam 再写测试
-- `.agents/skills/code-review` — Standards/Spec 双轴自审
-- `.agents/skills/handoff` — P1 完成后再写接手 handoff
+1. **工作区锁定提交**：
+   当前所有修改文件已由 `stash@{0}` 还原回工作区，接手 Agent 应先执行：
+   ```powershell
+   git add -A
+   git commit -m "refactor(p1.5/p2/p3.1): complete app_control refactor, obsolete files cleanup, and testing standardizations"
+   ```
+2. **将 P3.2 流式重构设计发给 DeepSeek 或者是子智能体**：
+   阅读 [.superpowers/spec/2026-07-14-refactor-p3.2-live-streaming-spec.md](file:///E:/project/funclip-pro/.superpowers/spec/2026-07-14-refactor-p3.2-live-streaming-spec.md) 流式重构规范，开始对流式采集下沉与流式 ASR 接口包化重构进行开发。
+
+### Potential Gotchas
+
+- **测试死锁与 Standard I/O 关闭**：绝对不要尝试在常规 Pytest 门禁中加入 `tests/archive/` 下的老测试，它们依然存在关闭 stdout 句柄导致 pytest 崩溃的问题。
+- **Gradio 离线限制拦截**：`app_control.py` 中虽然保留了旧的 Whisper/Qwen3 等引擎界面选项，但在进程内直接调用时已增加友好拦截保护。如果后续要支持 these 引擎，必须先对它们进行 Pipeline 包化。

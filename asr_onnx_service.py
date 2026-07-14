@@ -12,7 +12,6 @@
 #   - 模块间绝对导入：from funclip_pro.x import Y
 
 import os
-import sys
 import psutil
 
 try:
@@ -22,12 +21,6 @@ except Exception as e:
 
 for env_var in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"]:
     os.environ[env_var] = "6"
-
-# 1. 将项目 src 目录加入 sys.path（兼容无 PYTHONPATH 启动；等价原顶部逻辑）
-_src_root = os.path.dirname(os.path.abspath(__file__))
-_src_dir = os.path.join(_src_root, "src")
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
 
 # 2. DLL 补丁：动态点亮 onnxruntime GPU 推理（必须在首次加载 torch / onnxruntime 前）
 from funclip_pro.config.loader import apply_dll_patch

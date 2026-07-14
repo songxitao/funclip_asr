@@ -10,9 +10,16 @@ import tempfile
 import traceback
 import json
 
-# P0 路径解耦：从 src 加载配置 loader（优先 config.yaml / 环境变量推断）
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 from funclip_pro.config.loader import load_config
+
+_pipeline_instance = None
+
+def get_pipeline():
+    global _pipeline_instance
+    if _pipeline_instance is None:
+        from funclip_pro.pipeline import OfflinePipeline
+        _pipeline_instance = OfflinePipeline()
+    return _pipeline_instance
 
 # 0. 强制 UTF-8 输出 (解决 GBK 报错)
 sys.stdout.reconfigure(encoding='utf-8')
@@ -73,7 +80,7 @@ if "offline_python" not in config_data:
         OFFLINE_PYTHON = os.environ["FUNCLIP_OFFLINE_PYTHON"]
 
 # 6. 脚本路径自动定位
-OFFLINE_SCRIPT = os.path.join(PROJECT_PATH, "funclip", "asr1.py")
+# OFFLINE_SCRIPT = os.path.join(PROJECT_PATH, "funclip", "asr1.py")  # 已废止，由 OfflinePipeline 进程内调用替代
 LIVE_SCRIPT = os.path.join(PROJECT_PATH, "app_live_local.py")
 QWEN_LIVE_SCRIPT = os.path.join(PROJECT_ROOT, "app_live_ws.py")
 # =========================================================
@@ -286,86 +293,65 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             
         yield f"📂 [文件夹模式] 开启！字幕将统一归档至: {final_out_dir}", "准备中", None
     
-    # 2. 第二阶段：生成任务清单文件
-    task_list_file = os.path.join(PROJECT_PATH, "temp_task_list.txt")
-    try:
-        with open(task_list_file, "w", encoding="utf-8") as f:
-            for p in final_tasks:
-                f.write(p + "\n")
-    except Exception as e:
-        yield f"❌ 无法创建任务清单: {e}", "Error", None
+    # 2. 第二阶段：检查并调用进程内 OfflinePipeline 或处理尚未包化重构的引擎分支
+    if engine == "Whisper":
+        yield "❌ 错误：Whisper 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
         return
+    elif engine == "Qwen3 (Docker)":
+        yield "❌ 错误：Qwen3 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
+        return
+    elif engine == "FunASR" and funasr_mode != "SenseVoice":
+        yield f"❌ 错误：FunASR {funasr_mode} 模式暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 SenseVoice 模式。", "不支持", None
+        return
+
+    # 若输入有 hotwords_str，给予友好提示（OfflinePipeline 暂不支持热词）
+    if hotwords_str and hotwords_str.strip():
+        yield "⚠️ 提示：热词功能暂未被包化重构的 OfflinePipeline 支持，转写时将忽略热词。", "准备中", None
 
     yield f"🚀 启动引擎... (共 {len(final_tasks)} 个文件)", "启动中", None
 
-    # 3. 第三阶段：构建命令
-    backend = "funasr" # Default
-    if engine == "Whisper":
-        backend = "faster" if "Faster" in whisper_backend else "openai"
-    elif engine == "Qwen3 (Docker)":
-        backend = "qwen_vllm"
-    
-    sub_mode = "precision"
-    if engine == "FunASR":
-        if "SenseVoice" in funasr_mode: sub_mode = "emotion"
-        elif "Nano" in funasr_mode: sub_mode = "nano"
-        elif "SeACo" in funasr_mode: sub_mode = "seaco"
-
-    lang_code = {"自动 (Auto)": "auto", "中文": "zh", "英文": "en", 
-                 "日文": "ja", "粤语": "yue", "韩语": "ko"}.get(lang, "auto")
-    
-    cmd = [
-        "cmd.exe", "/k",  # 🔥 改成 /k 让窗口保持打开，方便看错误
-        OFFLINE_PYTHON, OFFLINE_SCRIPT,
-        "--file_list", task_list_file,
-        "--output_dir", str(final_out_dir), # 🔥 使用计算好的新路径
-        "--backend", backend,
-        "--model_size", whisper_size,
-        "--sub_mode", sub_mode,
-        "--language", lang_code,
-        "--batch_size", str(batch_size)
-    ]
-    if spk_on: cmd.append("--enable_spk")
-    
-    # 传递开关给后端
-    if folder_mode: cmd.append("--folder_mode")
-    
-    # 🔥 热词传递
-    if hotwords:
-        cmd.extend(["--hotwords", hotwords])
-
     try:
-        proc = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        from funclip_pro.utils import _segments_to_srt
         
-        yield f"✅ 批量任务已启动！\n输出目录: {final_out_dir}\n\n请查看弹出的黑色命令窗口查看实时进度...", "运行中", None
+        # 实例化/获取 pipeline 实例 (使用 Lazy Load 保证线程安全和显存保活)
+        pipeline = get_pipeline()
         
-        proc.wait()
-        
-        if os.path.exists(task_list_file):
-            os.remove(task_list_file)
-
-        # ========================================================
-        # 🔥🔥🔥 结果收集逻辑 (适配文件夹模式) 🔥🔥🔥
-        # ========================================================
         found_srts = []
-        # 注意：这里我们要去 final_out_dir 找文件
-        search_base = Path(final_out_dir)
-        
-        for input_file in final_tasks:
+        for idx, input_file in enumerate(final_tasks):
             p = Path(input_file)
             stem = p.stem
             
-            # 根据模式预测路径
-            if folder_mode:
-                 # 扁平模式: output/JavaCourse/01.srt
-                 expected_srt = search_base / f"{stem}.srt"
-            else:
-                 # 默认模式: output/01/01.srt
-                 expected_srt = search_base / stem / f"{stem}.srt"
+            yield f"⏳ 正在处理第 {idx+1}/{len(final_tasks)} 个文件: {p.name}...", f"运行中 ({idx+1}/{len(final_tasks)})", None
             
-            if expected_srt.exists():
-                found_srts.append(str(expected_srt.resolve()))
-        
+            # 调用 pipeline
+            raw_text, engine_key, segments, diarized_text = pipeline.run(
+                audio_path=str(input_file),
+                diarize=spk_on
+            )
+            
+            # 确定输出子目录
+            if folder_mode:
+                file_out_dir = Path(final_out_dir)
+            else:
+                file_out_dir = Path(final_out_dir) / stem
+            
+            file_out_dir.mkdir(parents=True, exist_ok=True)
+            
+            txt_path = file_out_dir / f"{stem}.txt"
+            srt_path = file_out_dir / f"{stem}.srt"
+            
+            # 写入文本文件
+            text_content = diarized_text if spk_on else raw_text
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(text_content)
+                
+            # 写入 SRT 字幕文件
+            srt_content = _segments_to_srt(segments)
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+                
+            found_srts.append(str(srt_path.resolve()))
+
         if found_srts:
             path_list_str = "\n".join(found_srts)
             success_msg = (
@@ -381,6 +367,7 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             yield "⚠️ 任务结束，但未检测到生成的 SRT 文件。", "结束", None
 
     except Exception as e:
+        traceback.print_exc()
         yield f"❌ 运行异常: {e}", "Error", None
 
 # def run_offline_asr(uploaded_files, path_input, engine, output_dir, whisper_size, funasr_mode, lang, whisper_backend, spk_on, batch_size):

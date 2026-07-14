@@ -9,7 +9,7 @@ class TestSegmentationEngine(unittest.TestCase):
 
     def _make_engine(self, mock_output_frames=293):
         """构造一个使用 mock 模型的 SegmentationEngine。"""
-        with patch("segmentation_engine.Model") as MockModel:
+        with patch("funclip_pro.core.segmentation.Model") as MockModel:
             # mock 模型的 forward 输出
             mock_model = MagicMock()
             # 7 classes: non-speech 高概率，其他低概率
@@ -20,7 +20,7 @@ class TestSegmentationEngine(unittest.TestCase):
             mock_model.to = MagicMock(return_value=mock_model)
             MockModel.from_pretrained.return_value = mock_model
 
-            from segmentation_engine import SegmentationEngine
+            from funclip_pro.core.segmentation import SegmentationEngine
             engine = SegmentationEngine.__new__(SegmentationEngine)
             engine.model = mock_model
             engine.device = "cpu"

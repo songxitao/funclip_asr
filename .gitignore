@@ -37,3 +37,4 @@ testset/ali_near_prep/
 
 # Test results binaries (keep json/jsonl, ignore raw logs)
 test_results/*.log
+nul

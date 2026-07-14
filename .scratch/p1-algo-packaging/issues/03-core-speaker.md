@@ -1,0 +1,33 @@
+# 03 — core.speaker：下沉 CampPlusSpeaker
+
+**What to build:** 将根 `speaker_engine.py` 中的 `segment_sliding_window` 函数与 `CampPlusSpeaker` 类下沉到 `src/funclip_pro/core/speaker.py`。
+
+**Blocked by:** 01 (包骨架搭建), 02 (core.segmentation) —— `cluster_with_segmentation` 接收 `SegmentationEngine` 实例
+
+**Status:** ready-for-agent
+
+- [ ] `from funclip_pro.core.speaker import CampPlusSpeaker, segment_sliding_window` 可用
+- [ ] `cluster_with_segmentation` 返回秒级 segments（回填 ×1000 转 ms，由调用方负责）
+- [ ] 路径零硬编码
+
+**Module interface contract:**
+```python
+def segment_sliding_window(audio, sr, win_sec=1.5, step_sec=0.5): ...
+
+class CampPlusSpeaker:
+    def __init__(self, model_dir: str = DEFAULT_SPK_MODEL_DIR, device: str = "cpu"): ...
+    def extract_embedding(self, chunk_16k) -> Optional[np.ndarray]: ...
+    def extract_embedding_sliding_mean(self, chunk_16k, sr=16000, win_sec=1.5, step_sec=0.5): ...
+    def _extract_all(self, audio_chunks): ...
+    def _ahc(self, emb_matrix, threshold=None, n=None): ...
+    def _apply_time_constraint(self, d2, labels1, valid, seg_times): ...
+    def cluster(self, audio_chunks, strategy="single", ...): ...
+    def cluster_sliding(self, audio_16k, sr=16000, strategy="spectral", ...): ...
+    def cluster_with_segmentation(self, audio_16k, segment_engine, ...): ...   # segment_engine: SegmentationEngine
+    def cluster_with_seamless_segmentation(self, ...): ...
+```
+
+**Notes:**
+- `cluster_with_segmentation` 第二参类型 = `SegmentationEngine`（来自 `funclip_pro.core.segmentation`），并行派发时按此契约对齐。
+- numpy 锁 1.26.4；时间戳回填口径见 AGENTS.md 红线。
+- 最高指导：`.superpowers/spec/2026-07-14-refactor-p0-p1-spec.md` L50。

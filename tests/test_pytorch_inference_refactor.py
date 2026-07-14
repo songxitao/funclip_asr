@@ -2,7 +2,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
-import asr_service
+import asr_onnx_service as asr_service
 
 def test_run_inference_with_punc(monkeypatch):
     # 确保模型加载

@@ -34,6 +34,14 @@ import numpy as np
 import soundfile as sf
 
 
+def _normalize_stem(stem: str) -> str:
+    """移除阿里数据集的 _mixed 等后缀，使 stem 能与 rttm 标注匹配。"""
+    for suffix in ["_mixed", "_near", "_far"]:
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
 def _select_best_channel(audio, sr):
     """从多通道音频中选择能量/SNR最高的通道。
 
@@ -171,7 +179,22 @@ def main():
         + glob.glob(os.path.join(args.audio_dir, "**", "*.wav"), recursive=True)
     )
     rttm_map = {Path(f).stem: f for f in rttm_files}
-    pairs = [(af, rttm_map[Path(af).stem]) for af in audio_files if Path(af).stem in rttm_map]
+    pairs = []
+    for af in audio_files:
+        stem = Path(af).stem
+        # 原始 stem 直接匹配
+        if stem in rttm_map:
+            pairs.append((af, rttm_map[stem]))
+        else:
+            # 尝试 normalize 后匹配
+            norm = _normalize_stem(stem)
+            if norm in rttm_map:
+                pairs.append((af, rttm_map[norm]))
+            else:
+                print(f"[warn] 无法匹配音频 {af} (stem={stem}, norm={norm})", flush=True)
+    if len(pairs) == 0:
+        print("\n[CRITICAL] 未匹配到任何音频-RTTM 对！请检查 --audio_dir 和 --rttm_dir 路径或文件名命名规范。", flush=True)
+        sys.exit(1)
     if args.limit:
         pairs = pairs[: args.limit]
     print(f"[info] 匹配 {len(pairs)} 对 audio/rttm | limit={args.limit}")

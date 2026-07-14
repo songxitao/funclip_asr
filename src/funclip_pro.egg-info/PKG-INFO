@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: funclip-pro
+Version: 0.1.0
+Summary: ASR + Speaker Diarization system with OfflinePipeline
+Requires-Python: >=3.10
+Requires-Dist: librosa
+Requires-Dist: soundfile
+Requires-Dist: scikit-learn>=1.3.2
+Requires-Dist: funasr>=1.1.2
+Requires-Dist: moviepy==1.0.3
+Requires-Dist: numpy==1.26.4
+Requires-Dist: gradio
+Requires-Dist: modelscope
+Requires-Dist: torch>=1.13
+Requires-Dist: torchaudio
+Requires-Dist: openai
+Requires-Dist: g4f
+Requires-Dist: dashscope
+Requires-Dist: curl_cffi
+Requires-Dist: funasr-onnx
+Requires-Dist: onnxruntime-gpu[cuda,cudnn]
+Requires-Dist: fastapi
+Requires-Dist: uvicorn

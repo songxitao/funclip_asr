@@ -13,7 +13,7 @@ class TestSegClustering(unittest.TestCase):
         self.mock_automodel_class = self.patcher_automodel.start()
 
         # 实例化 CampPlusSpeaker
-        from speaker_engine import CampPlusSpeaker
+        from funclip_pro.core.speaker import CampPlusSpeaker
         self.speaker_engine = CampPlusSpeaker(model_dir="mock_dir", device="cpu")
 
         # mock 说话人向量提取

@@ -21,12 +21,6 @@ import os
 import sys
 import argparse
 
-# 1. 将项目 src 目录加入 sys.path（兼容无 PYTHONPATH 启动；等价 asr_onnx_service 顶部逻辑）
-_src_root = os.path.dirname(os.path.abspath(__file__))
-_src_dir = os.path.join(_src_root, "src")
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
-
 # 2. DLL 补丁：动态点亮 onnxruntime / torch 推理（必须在首次加载重型库前）
 from funclip_pro.config.loader import apply_dll_patch
 apply_dll_patch()

@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 # 引入微服务应用
-from asr_service import app
+from asr_onnx_service import app
 
 client = TestClient(app)
 

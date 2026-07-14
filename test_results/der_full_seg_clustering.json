@@ -1,0 +1,328 @@
+{
+  "global_DER": 0.2063098771087697,
+  "global": {
+    "FA": 8182,
+    "MISS": 350064,
+    "CONF": 107873,
+    "REF": 2259315
+  },
+  "per_file": [
+    {
+      "file": "L_R003S01C02.flac",
+      "duration": 2362.9,
+      "num_hyp_segs": 558,
+      "num_ref_spks": 6,
+      "DER": 0.2983049710038755,
+      "detail": {
+        "FA": 412,
+        "MISS": 45747,
+        "CONF": 7183,
+        "REF": 178817
+      },
+      "mapping": {
+        "1": "002-F",
+        "2": "006-M",
+        "3": "006-M",
+        "4": "005-M",
+        "5": "004-M",
+        "6": "007-M"
+      },
+      "latency_s": 68.2
+    },
+    {
+      "file": "L_R003S02C02.flac",
+      "duration": 2246.7,
+      "num_hyp_segs": 550,
+      "num_ref_spks": 6,
+      "DER": 0.25133162583014124,
+      "detail": {
+        "FA": 123,
+        "MISS": 41219,
+        "CONF": 3012,
+        "REF": 176476
+      },
+      "mapping": {
+        "1": "002-F",
+        "2": "006-M",
+        "3": "004-M",
+        "4": "003-F",
+        "5": "005-M",
+        "6": "007-M"
+      },
+      "latency_s": 68.9
+    },
+    {
+      "file": "L_R003S03C02.flac",
+      "duration": 2268.0,
+      "num_hyp_segs": 496,
+      "num_ref_spks": 6,
+      "DER": 0.19230969443528656,
+      "detail": {
+        "FA": 198,
+        "MISS": 25885,
+        "CONF": 7166,
+        "REF": 172893
+      },
+      "mapping": {
+        "1": "003-F",
+        "2": "006-M",
+        "3": "004-M",
+        "4": "005-M",
+        "5": "002-F",
+        "6": "006-M"
+      },
+      "latency_s": 69.0
+    },
+    {
+      "file": "L_R003S04C02.flac",
+      "duration": 2325.0,
+      "num_hyp_segs": 514,
+      "num_ref_spks": 6,
+      "DER": 0.15126996705175794,
+      "detail": {
+        "FA": 1897,
+        "MISS": 16592,
+        "CONF": 6900,
+        "REF": 167839
+      },
+      "mapping": {
+        "1": "006-M",
+        "2": "005-M",
+        "3": "006-M",
+        "4": "004-M",
+        "5": "007-M",
+        "6": "002-F"
+      },
+      "latency_s": 69.7
+    },
+    {
+      "file": "L_R004S01C01.flac",
+      "duration": 2195.4,
+      "num_hyp_segs": 486,
+      "num_ref_spks": 7,
+      "DER": 0.19325844031628536,
+      "detail": {
+        "FA": 10,
+        "MISS": 28310,
+        "CONF": 4211,
+        "REF": 168329
+      },
+      "mapping": {
+        "1": "001-M",
+        "2": "003-M",
+        "3": "005-F",
+        "4": "002-M",
+        "5": "006-F",
+        "6": "004-M",
+        "7": "001-M"
+      },
+      "latency_s": 62.1
+    },
+    {
+      "file": "L_R004S02C01.flac",
+      "duration": 2226.7,
+      "num_hyp_segs": 364,
+      "num_ref_spks": 7,
+      "DER": 0.10490223640763587,
+      "detail": {
+        "FA": 528,
+        "MISS": 7811,
+        "CONF": 10691,
+        "REF": 181407
+      },
+      "mapping": {
+        "1": "005-F",
+        "2": "006-F",
+        "3": "001-M",
+        "4": "002-M",
+        "5": "001-M",
+        "6": "004-M",
+        "7": "007-M"
+      },
+      "latency_s": 56.0
+    },
+    {
+      "file": "L_R004S03C01.flac",
+      "duration": 2227.8,
+      "num_hyp_segs": 368,
+      "num_ref_spks": 7,
+      "DER": 0.12066841776672872,
+      "detail": {
+        "FA": 355,
+        "MISS": 11748,
+        "CONF": 9351,
+        "REF": 177793
+      },
+      "mapping": {
+        "1": "004-M",
+        "2": "005-F",
+        "3": "001-M",
+        "4": "001-M",
+        "5": "002-M",
+        "6": "006-F",
+        "7": "007-M"
+      },
+      "latency_s": 55.8
+    },
+    {
+      "file": "L_R004S06C01.flac",
+      "duration": 2210.3,
+      "num_hyp_segs": 453,
+      "num_ref_spks": 7,
+      "DER": 0.29011236671733975,
+      "detail": {
+        "FA": 157,
+        "MISS": 27729,
+        "CONF": 26694,
+        "REF": 188134
+      },
+      "mapping": {
+        "1": "007-M",
+        "2": "005-F",
+        "3": "003-M",
+        "4": "006-F",
+        "5": "001-M",
+        "6": "002-M",
+        "7": "004-M"
+      },
+      "latency_s": 63.8
+    },
+    {
+      "file": "M_R003S01C01.flac",
+      "duration": 2282.2,
+      "num_hyp_segs": 563,
+      "num_ref_spks": 6,
+      "DER": 0.29025665258867656,
+      "detail": {
+        "FA": 0,
+        "MISS": 44861,
+        "CONF": 4278,
+        "REF": 169295
+      },
+      "mapping": {
+        "1": "001-M",
+        "2": "006-F",
+        "3": "005-F",
+        "4": "002-M",
+        "5": "003-F",
+        "6": "004-F"
+      },
+      "latency_s": 71.0
+    },
+    {
+      "file": "M_R003S02C01.flac",
+      "duration": 2321.3,
+      "num_hyp_segs": 556,
+      "num_ref_spks": 6,
+      "DER": 0.2775935051806924,
+      "detail": {
+        "FA": 122,
+        "MISS": 42780,
+        "CONF": 9823,
+        "REF": 189936
+      },
+      "mapping": {
+        "1": "001-M",
+        "2": "005-F",
+        "3": "004-F",
+        "4": "006-F",
+        "5": "002-M",
+        "6": "001-M"
+      },
+      "latency_s": 74.8
+    },
+    {
+      "file": "M_R003S04C01.flac",
+      "duration": 2256.7,
+      "num_hyp_segs": 496,
+      "num_ref_spks": 6,
+      "DER": 0.1323030845067493,
+      "detail": {
+        "FA": 774,
+        "MISS": 11023,
+        "CONF": 7286,
+        "REF": 144237
+      },
+      "mapping": {
+        "1": "005-F",
+        "2": "001-M",
+        "3": "004-F",
+        "4": "006-F",
+        "5": "003-F",
+        "6": "002-M"
+      },
+      "latency_s": 73.6
+    },
+    {
+      "file": "M_R003S05C01.flac",
+      "duration": 2341.2,
+      "num_hyp_segs": 507,
+      "num_ref_spks": 6,
+      "DER": 0.30022629413723245,
+      "detail": {
+        "FA": 3451,
+        "MISS": 42476,
+        "CONF": 7274,
+        "REF": 177203
+      },
+      "mapping": {
+        "1": "006-F",
+        "2": "004-F",
+        "3": "001-M",
+        "4": "002-M",
+        "5": "005-F",
+        "6": "003-F"
+      },
+      "latency_s": 71.7
+    },
+    {
+      "file": "S_R003S01C01.flac",
+      "duration": 2220.5,
+      "num_hyp_segs": 306,
+      "num_ref_spks": 5,
+      "DER": 0.04816837969285321,
+      "detail": {
+        "FA": 155,
+        "MISS": 3883,
+        "CONF": 4004,
+        "REF": 166956
+      },
+      "mapping": {
+        "1": "001-M",
+        "2": "003-M",
+        "3": "005-M",
+        "4": "004-F",
+        "5": "002-F"
+      },
+      "latency_s": 59.9
+    },
+    {
+      "file": "S_R003S02C01.flac",
+      "error": "('Connection aborted.', ConnectionResetError(10054, '远程主机强迫关闭了一个现有的连接。', None, 10054, None))"
+    },
+    {
+      "file": "S_R003S03C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7FB50690>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    },
+    {
+      "file": "S_R003S04C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7EA78BD0>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    },
+    {
+      "file": "S_R004S01C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7FB55A50>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    },
+    {
+      "file": "S_R004S02C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7FB05050>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    },
+    {
+      "file": "S_R004S03C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7FB08C10>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    },
+    {
+      "file": "S_R004S04C01.flac",
+      "error": "HTTPConnectionPool(host='localhost', port=8002): Max retries exceeded with url: /transcribe (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x0000023D7FAF6E10>: Failed to establish a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。'))"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import psutil
 import torch
-import asr_service  # 触发头部亲和性和线程设置
+import asr_onnx_service as asr_service  # 触发头部亲和性和线程设置
 
 def test_cpu_affinity_and_threads():
     affinity = psutil.Process().cpu_affinity()

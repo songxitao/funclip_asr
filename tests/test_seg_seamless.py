@@ -58,7 +58,7 @@ class TestClusterWithSeamlessSegmentation(unittest.TestCase):
         self.patcher_automodel = patch("funasr.AutoModel")
         self.mock_automodel_class = self.patcher_automodel.start()
 
-        from speaker_engine import CampPlusSpeaker
+        from funclip_pro.core.speaker import CampPlusSpeaker
         self.speaker_engine = CampPlusSpeaker(model_dir="mock_dir", device="cpu")
 
         # mock 说话人向量提取
@@ -167,7 +167,7 @@ class TestAssignClausesToSpeakersSeamless(unittest.TestCase):
     """测试 _assign_clauses_to_speakers_seamless() 锚点扩散逻辑。"""
 
     def _call(self, asr_start, asr_end, text, seamless_segs):
-        from asr_onnx_service import _assign_clauses_to_speakers_seamless
+        from funclip_pro.core import _assign_clauses_to_speakers_seamless
         return _assign_clauses_to_speakers_seamless(asr_start, asr_end, text, seamless_segs)
 
     def test_clause_on_determined_segment(self):

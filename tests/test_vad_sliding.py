@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
-from speaker_engine import CampPlusSpeaker
+from funclip_pro.core.speaker import CampPlusSpeaker
 
 class MockTensor:
     """模拟带有 cpu().numpy() 接口的 Tensor 对象"""

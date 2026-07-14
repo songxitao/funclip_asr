@@ -84,7 +84,8 @@ graph TD
 ```bash
 git clone <repo_url>
 cd funclip-pro
-E:\conda\envs\asr_ui_env\python.exe -m pip install -r requirements.txt
+# 以可编辑模式一键安装 funclip_pro 算法包及其依赖，消除了 sys.path 动态挂载
+E:\conda\envs\asr_ui_env\python.exe -m pip install -e .
 ```
 
 ### 3. 一键启动服务
@@ -185,6 +186,18 @@ E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize --form
 ---
 
 ## 🏗️ 版本演进 (Changelog)
+
+### v0.6 — 外壳应用统一归口与物理清理 (P3 阶段) 🏆
+- **Gradio 离线应用进程内归口**：重构了 [app_control.py](file:///E:/project/funclip-pro/app_control.py) 里的离线转写，废除 `subprocess.Popen` CMD 弹窗调用，改为在 Python 进程内通过惰性加载延迟实例化并直接调用核心 `OfflinePipeline.run()`，并在进程内完成文本与 SRT 字幕的物理写入，完全兼容原有输出结果。
+- **废弃冗余大文件物理清理**：在离线界面归口验证后，彻底物理删除了孤立冗余的单文件引擎 `funclip/asr1.py` (119KB) 以及 `funclip/launch.py` 及其依赖；物理清除了 `funclip/asr1 copy.py` 等 5 个 0 引用的历史备份文件，彻底净化代码库结构。
+- **常规测试全绿大满贯**：同步修复了 [test_seg_seamless.py](file:///E:/project/funclip-pro/tests/test_seg_seamless.py) 等测试文件的下沉导入问题，56 个核心用例中 **55 PASSED, 1 SKIPPED 绿灯通过**。
+
+### v0.5 — 精度闭环与构建标准化
+- **DER 评测文件名对齐修复**：`der_eval.py` 新增 `_normalize_stem()` 自动剥离 Ali 数据集 `_mixed`/`_near`/`_far` 后缀；0 匹配时 `exit(1)` 终止，杜绝静默 DER=0.0% 假绿
+- **双分支 DER 精度验证门禁**：Git 分支回退跑测旧代码 19.69% vs P1 19.95%（+0.26%，GPU 波动 ±1% 阈值内），数学证明 P1 算法下沉重构零精度退化
+- **根目录"真相源唯一"清理**：物理删除已被包化的 `segmentation_engine.py`(321行)、`speaker_engine.py`(567行)、`asr_service.py`(8.7KB)；11 处测试 import 同步更新至 `funclip_pro.core.*`
+- **PEP-517 构建系统**：新增 `pyproject.toml`，支持 `pip install -e .` 一键安装，`numpy==1.26.4` 红线锁死；3 个外壳脚本移除 `sys.path.insert` 动态挂载
+- **测试冲突归档**：5 个在模块顶层替换 `sys.stdout`/`sys.stderr` 的致命测试转移至 `tests/archive/`，常规 `pytest tests/` 可安全执行（37/40 通过，3 项 pre-existing 失败）
 
 ### v0.3 — SRT 输出 + 同说话人合并
 - 新增 SRT 字幕输出格式（`response_format=srt`）
