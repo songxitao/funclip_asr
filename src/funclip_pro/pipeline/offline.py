@@ -152,6 +152,16 @@ class OfflinePipeline:
 
         engine_key = asr_mod._select_engine(engine, duration_ms)
 
+        # 🔥 Qwen3 (Docker) 引擎专用分支：直接调用 Docker API，跳过本地 VAD/解码
+        if engine_key == "qwen":
+            from funclip_pro.core.asr import QwenEngine, parse_qwen_timestamps
+
+            qwen_engine = QwenEngine()
+            result = qwen_engine.transcribe(audio_path, language=language[0] if isinstance(language, list) else (language or "auto"))
+            text = result["text"]
+            segments = parse_qwen_timestamps(result.get("raw", {}))
+            return text, "qwen", segments or [], ""
+
         if diarize and diarize_strategy == "seg_clustering":
             try:
                 # 1. 运行全局说话人聚类与分割（保证说话人3等全局一致性）

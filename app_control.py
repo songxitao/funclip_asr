@@ -35,11 +35,11 @@ PROJECT_PATH = PROJECT_ROOT
 
 # 3. Conda 安装根目录 (如果你的 Conda 不在项目内，这个建议保留原样或改为环境变量)
 # 向后兼容回退值：使用转义字符串而非 Windows 盘符 raw 字面量（P0 路径解耦要求）
-_CONDA_ROOT_FALLBACK = "D:\\program files\\Miniconda"
+_CONDA_ROOT_FALLBACK = ""  # fallback: use system python; see warning below
 
 # 4. 【离线任务】使用的 Python
 # 注意：如果这个环境不在项目内，建议保留绝对路径
-_OFFLINE_PYTHON_FALLBACK = "E:\\conda\\envs\\funclip_final\\python.exe"
+_OFFLINE_PYTHON_FALLBACK = "python"  # fallback: rely on system PATH
 
 # 5. 【实时任务】环境名称
 LIVE_ENV_NAME = "asr_ui_env"
@@ -208,7 +208,7 @@ def parse_text_paths(text_input):
 
 def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, rec_save_dir, whisper_size, funasr_mode, lang, whisper_backend, spk_on, batch_size, folder_mode, hotwords_str):
     # 0. 检查环境
-    if not os.path.exists(OFFLINE_PYTHON):
+    if OFFLINE_PYTHON != "python" and not os.path.exists(OFFLINE_PYTHON):
         yield f"❌ 错误：找不到离线 Python: {OFFLINE_PYTHON}", "启动失败", None
         return
     
@@ -297,12 +297,6 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
     if engine == "Whisper":
         yield "❌ 错误：Whisper 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
         return
-    elif engine == "Qwen3 (Docker)":
-        yield "❌ 错误：Qwen3 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
-        return
-    elif engine == "FunASR" and funasr_mode != "SenseVoice":
-        yield f"❌ 错误：FunASR {funasr_mode} 模式暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 SenseVoice 模式。", "不支持", None
-        return
 
     # 若输入有 hotwords_str，给予友好提示（OfflinePipeline 暂不支持热词）
     if hotwords_str and hotwords_str.strip():
@@ -312,7 +306,21 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
 
     try:
         from funclip_pro.utils import _segments_to_srt
-        
+
+        # 语言映射
+        _LANG_MAP = {
+            "自动 (Auto)": "auto",
+            "中文": "zh",
+            "中文 (Chinese)": "zh",
+            "英文": "en",
+            "英文 (English)": "en",
+            "日文": "ja",
+            "日文 (Japanese)": "ja",
+            "粤语 (Yue)": "yue",
+            "韩语 (Korean)": "ko",
+        }
+        lang_code = _LANG_MAP.get(lang, "auto")
+
         # 实例化/获取 pipeline 实例 (使用 Lazy Load 保证线程安全和显存保活)
         pipeline = get_pipeline()
         
@@ -323,10 +331,12 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             
             yield f"⏳ 正在处理第 {idx+1}/{len(final_tasks)} 个文件: {p.name}...", f"运行中 ({idx+1}/{len(final_tasks)})", None
             
-            # 调用 pipeline
+            # 调用 pipeline（透传引擎和语言参数）
             raw_text, engine_key, segments, diarized_text = pipeline.run(
                 audio_path=str(input_file),
-                diarize=spk_on
+                diarize=spk_on,
+                engine=engine,
+                language=[lang_code],
             )
             
             # 确定输出子目录
@@ -535,16 +545,16 @@ def run_live_asr(model_name, lang_label, device_mode_label, overlay_on, force_co
     
     if "Qwen3" in model_name:
         # Qwen3 专用逻辑
-        target_script = QWEN_LIVE_SCRIPT
+        target_script = os.path.basename(QWEN_LIVE_SCRIPT)
         lang_code = {"中文": "zh", "英文": "en", "自动": "auto"}.get(lang_label, "auto")
         mode_arg = "loopback" if "Loopback" in device_mode_label else "mic"
-        cmd_str = f'python "{target_script}" --mode {mode_arg} --lang {lang_code}'
+        cmd_str = f'python "%~dp0{target_script}" --mode {mode_arg} --lang {lang_code}'
         if save_on:
             cmd_str += f' --save_on --save_dir "{save_dir}" --audio_format {audio_format}'
         title_str = "Qwen3 Real-time Subtitles"
     else:
         # 原有 FunASR 逻辑
-        target_script = LIVE_SCRIPT
+        target_script = os.path.basename(LIVE_SCRIPT)
         model_dir = os.path.join(model_root, "FunAudioLLM", "Fun-ASR-Nano-2512") if "Nano" in model_name else os.path.join(model_root, "iic", "SenseVoiceSmall")
         lang_code = {"中文": "zh", "英文": "en", "自动": "auto"}.get(lang_label, "auto")
         
@@ -554,32 +564,77 @@ def run_live_asr(model_name, lang_label, device_mode_label, overlay_on, force_co
             "混合模式 (Mix - 实验性)": "mix"
         }
         mode_arg = mode_map.get(device_mode_label, "loopback")
-        cmd_str = f'python "{target_script}" --model_dir "{model_dir}" --language {lang_code} --device_mode {mode_arg}'
+        cmd_str = f'python "%~dp0{target_script}" --model_dir "{model_dir}" --language {lang_code} --device_mode {mode_arg}'
         if overlay_on: cmd_str += " --overlay"
         title_str = f"FunASR Live Engine ({mode_arg})"
 
     # 3. 生成启动脚本
     bat_file = os.path.join(PROJECT_PATH, "start_live_engine.bat")
-    activate_script = os.path.join(CONDA_ROOT, "Scripts", "activate.bat")
     
-    # 🔥 Bat 内容：先激活环境，再运行
-    bat_content = f"""@echo off
+    if CONDA_ROOT:
+        activate_script = os.path.join(CONDA_ROOT, "Scripts", "activate.bat")
+        # Bat 内容：尝试 conda 激活，否则退回到系统 PATH
+        bat_content = f"""@echo off
 chcp 65001 >nul
 title {title_str}
-echo ==========================================
-echo  🚀 Activating Env: {LIVE_ENV_NAME}...
-echo ==========================================
-call "{activate_script}" {LIVE_ENV_NAME}
+
+if not defined CONDA_PREFIX (
+    if exist "{activate_script}" (
+        echo Activating Env: {LIVE_ENV_NAME}...
+        call "{activate_script}" {LIVE_ENV_NAME}
+    ) else (
+        where python >nul 2>nul
+        if errorlevel 1 (
+            echo [WARNING] Python not found in PATH. Please activate your conda environment first.
+            pause
+            exit /b 1
+        )
+        echo [WARNING] Conda not found at configured path, using system python.
+        echo To customize, please set config.json.
+    )
+) else (
+    echo Conda env already active: %CONDA_PREFIX%
+)
 
 echo.
-echo  🚀 Launching Engine...
+echo  Launching Engine...
 echo  Command: {cmd_str}
 echo ==========================================
 {cmd_str}
 
 if %errorlevel% neq 0 (
     echo.
-    echo ❌ Error occurred! Press any key to exit...
+    echo Error occurred! Press any key to exit...
+    pause
+)
+"""
+    else:
+        print("WARNING: 未检测到本地配置，使用系统默认 python，如需自定义请配置 config.json")
+        # Bat 内容：不使用 conda，直接依赖系统 PATH
+        bat_content = f"""@echo off
+chcp 65001 >nul
+title {title_str}
+
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [WARNING] Python not found in PATH. Please activate your conda environment first.
+    pause
+    exit /b 1
+)
+
+echo ==========================================
+echo  WARNING: 未检测到 Conda 配置，使用系统默认 python
+echo  如需自定义请配置 config.json
+echo ==========================================
+echo.
+echo  Launching Engine (system python)...
+echo  Command: {cmd_str}
+echo ==========================================
+{cmd_str}
+
+if %errorlevel% neq 0 (
+    echo.
+    echo Error occurred! Press any key to exit...
     pause
 )
 """

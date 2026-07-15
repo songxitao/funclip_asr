@@ -38,3 +38,15 @@ testset/ali_near_prep/
 # Test results binaries (keep json/jsonl, ignore raw logs)
 test_results/*.log
 nul
+
+# Debug and local refactor scratch pad
+.scratch/
+.pilot_venv/
+
+# WorkBuddy project memory
+.workbuddy/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/

@@ -400,7 +400,9 @@ def _get_torch_model():
 
 
 def _select_engine(engine_override, duration_ms):
-    """引擎路由：cpu->sherpa；gpu->torch；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
+    """引擎路由：cpu->sherpa；gpu->torch；qwen/qwen3->qwen；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
+    if engine_override and str(engine_override).lower() in ("qwen", "qwen3", "qwen3 (docker)"):
+        return "qwen"
     if engine_override == "cpu":
         return "sherpa"
     if engine_override == "gpu":
@@ -480,3 +482,190 @@ def _merge_vad_segments(segments, max_gap_ms=300, max_duration_ms=8000):
             curr_start, curr_end = next_start, next_end
     merged.append([curr_start, curr_end])
     return merged
+
+
+# ---------------------------------------------------------------------------
+# QwenEngine（Qwen2-Audio Docker HTTP API 引擎）
+# ---------------------------------------------------------------------------
+class QwenEngine:
+    """Qwen2-Audio Docker 引擎，通过 HTTP API 调用远程 Docker 服务进行转写。
+
+    接口对齐新版引擎模式，支持 __call__ 快捷转写与 transcribe 完整结果。
+    API 端点从 config.json 的 qwen_server.host 读取，默认 http://127.0.0.1:28000。
+    """
+
+    def __init__(self, host: str = None):
+        # 从 config.json 读取或使用默认值
+        if host is None:
+            try:
+                from funclip_pro.config.loader import load_config
+                _cfg = load_config()
+                host = _cfg.get("qwen_server", {}).get("host", "http://127.0.0.1:28000")
+            except Exception:
+                host = "http://127.0.0.1:28000"
+        self.host = host.rstrip("/")
+        self.model_name = "Qwen2-Audio-7B"
+
+        # Docker 共享存储卷路径
+        try:
+            import inspect
+            _frame = inspect.currentframe()
+            # 向上追溯到项目的根目录（funclip_pro 包的上级）
+            _this_file = inspect.getfile(type(self))
+            self.project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_this_file))))
+        except Exception:
+            self.project_root = None
+
+        self.shared_host_dir = (
+            os.path.join(self.project_root, "qwen_server", "shared_tmp")
+            if self.project_root else None
+        )
+        self.shared_docker_dir = "/app/server/shared_tmp"
+        self.logger = logger
+
+    def __call__(self, audio_path: str) -> str:
+        """快捷调用，返回转写文本字符串。"""
+        result = self.transcribe(audio_path)
+        return result["text"]
+
+    def transcribe(self, audio_path: str, language: str = "auto", **kwargs) -> dict:
+        """转写音频文件，返回完整结果。
+
+        Returns:
+            {"text": str, "srt": str, "raw": dict}
+        """
+        self.logger.info("[QwenEngine] 开始处理: %s", os.path.basename(audio_path))
+        t_start = time.time()
+
+        # 1. 尝试使用 Shared Volume 优化（减少大文件网络传输）
+        file_name = os.path.basename(audio_path)
+        use_shared = False
+        shared_path = None
+        docker_path = None
+
+        if self.shared_host_dir and os.path.isdir(os.path.dirname(self.shared_host_dir)):
+            try:
+                os.makedirs(self.shared_host_dir, exist_ok=True)
+                shared_path = os.path.join(self.shared_host_dir, file_name)
+                import shutil
+                shutil.copy(audio_path, shared_path)
+                docker_path = f"{self.shared_docker_dir}/{file_name}"
+                use_shared = True
+                self.logger.info("[QwenEngine] 已启用共享存储卷模式")
+            except Exception as e:
+                self.logger.warning("[QwenEngine] 无法使用共享目录: %s, 将使用 Base64 模式", e)
+
+        # 2. 构造请求
+        payload = {
+            "language": language,
+            "return_timestamps": True,
+        }
+        if use_shared:
+            payload["audio_paths"] = [docker_path]
+        else:
+            import base64
+            with open(audio_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            payload["audio_data"] = [b64]
+
+        # 3. 发送请求
+        import requests
+        try:
+            res = requests.post(
+                f"{self.host}/v1/audio/batch_transcriptions",
+                json=payload,
+                timeout=(2.0, 15.0),
+            )
+            if res.status_code != 200:
+                raise RuntimeError(f"API Error {res.status_code}: {res.text}")
+
+            data = res.json()
+            # Batch API returns a list of results
+            result_item = data[0] if isinstance(data, list) and len(data) > 0 else data
+
+            text = result_item.get("text", "")
+            timestamps = result_item.get("timestamps", [])
+
+            dur = time.time() - t_start
+            self.logger.info("[QwenEngine] 处理完成! 耗时: %.2fs", dur)
+
+            # 4. 生成 SRT
+            srt_content = self._build_srt(timestamps, text)
+
+            return {
+                "text": text,
+                "srt": srt_content,
+                "raw": result_item,
+            }
+        except requests.exceptions.ConnectTimeout as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务连接超时(2s)，请确认服务是否已启动: %s", e)
+            raise RuntimeError("Docker ASR 服务连接超时，请检查服务状态") from e
+        except requests.exceptions.ReadTimeout as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务响应超时(15s)，请确认服务是否正常: %s", e)
+            raise RuntimeError("Docker ASR 服务响应超时，请检查服务状态") from e
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务无法连接，请确认服务是否已启动: %s", e)
+            raise RuntimeError("Docker ASR 服务无法连接，请检查服务状态") from e
+        except Exception as e:
+            self.logger.error("[QwenEngine] 请求失败: %s", e)
+            raise RuntimeError(f"QwenEngine ASR 请求异常: {e}") from e
+        finally:
+            # 清理共享文件
+            if use_shared and shared_path and os.path.exists(shared_path):
+                try:
+                    os.remove(shared_path)
+                except Exception:
+                    pass
+
+    def _build_srt(self, timestamps: list, full_text: str) -> str:
+        """根据时间戳列表生成 SRT 字幕内容。"""
+        from funclip_pro.utils import _ms_to_srt
+
+        if not timestamps:
+            # 无时间戳时输出整段
+            return f"1\n00:00:00,000 --> 00:00:10,000\n{full_text}\n"
+
+        # 尝试将时间戳与文本分段映射
+        lines = []
+        idx = 1
+        # 时间戳预期格式: [{"start": 0.0, "end": 2.5, "text": "..."}, ...]
+        for ts in timestamps:
+            start_sec = ts.get("start", 0)
+            end_sec = ts.get("end", start_sec + 2)
+            seg_text = ts.get("text", "")
+            if not seg_text.strip():
+                continue
+            lines.append(
+                f"{idx}\n"
+                f"{_ms_to_srt(int(start_sec * 1000))} --> {_ms_to_srt(int(end_sec * 1000))}\n"
+                f"{seg_text}\n"
+            )
+            idx += 1
+
+        if not lines:
+            return f"1\n00:00:00,000 --> 00:00:10,000\n{full_text}\n"
+
+        return "\n".join(lines)
+
+
+def parse_qwen_timestamps(raw: dict) -> list:
+    """将 QwenEngine 的 raw 结果解析为 pipeline 段列表。
+
+    Returns:
+        List[{"start": ms, "end": ms, "text": str}]
+    """
+    timestamps = raw.get("timestamps", [])
+    if not timestamps:
+        return []
+    segments = []
+    for ts in timestamps:
+        start_sec = ts.get("start", 0)
+        end_sec = ts.get("end", start_sec + 2)
+        seg_text = ts.get("text", "")
+        if seg_text.strip():
+            segments.append({
+                "start": int(start_sec * 1000),
+                "end": int(end_sec * 1000),
+                "text": seg_text,
+            })
+    return segments

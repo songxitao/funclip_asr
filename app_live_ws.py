@@ -12,18 +12,13 @@ import json
 import asyncio
 import websockets
 import wave
-import onnxruntime
 from typing import List
+
+from funclip_pro.core.audio import LoopbackStream, MicStream, MixedStream
+from funclip_pro.core.streaming_asr import SileroVAD
 
 # Force UTF-8 output
 sys.stdout.reconfigure(encoding='utf-8')
-
-try:
-    import pyaudiowpatch as pyaudio
-    HAS_LOOPBACK = True
-except ImportError:
-    import pyaudio
-    HAS_LOOPBACK = False
 
 # DPI Awareness
 try:
@@ -38,69 +33,6 @@ SAMPLE_RATE = 16000
 CHUNK_MS = 500  # 🔥 与服务端 chunk_size_sec=0.5 对齐，减少通信开销
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_MS / 1000)
 SERVER_WS_URL = "ws://127.0.0.1:28000/ws/asr"
-
-# --- Silero VAD Configuration ---
-VAD_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model", "models", "silero_vad.onnx")
-VAD_SPEECH_THRESH = 0.45   # > 此值判定为有人说话
-VAD_SILENCE_THRESH = 0.25  # < 此值判定为静音（滞回防抖）
-VAD_SILENCE_RESET_SEC = 1.0  # 连续静音多久才允许触发重置
-
-
-# ================= 🎙️ Silero VAD 封装 =================
-class SileroVAD:
-    """轻量级语音活动检测，跑在 CPU 上，< 1ms/帧"""
-    def __init__(self, model_path):
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"VAD 模型未找到: {model_path}")
-        opts = onnxruntime.SessionOptions()
-        opts.log_severity_level = 3
-        self.session = onnxruntime.InferenceSession(
-            model_path, providers=['CPUExecutionProvider'], sess_options=opts
-        )
-        self.input_names = [x.name for x in self.session.get_inputs()]
-        self.reset_states()
-        print(f"\u2705 Silero VAD Loaded (CPU): {os.path.basename(model_path)}")
-
-    def reset_states(self):
-        if 'state' in self.input_names:
-            self._state = np.zeros((2, 1, 128), dtype=np.float32)
-        else:
-            self._h = np.zeros((2, 1, 64), dtype=np.float32)
-            self._c = np.zeros((2, 1, 64), dtype=np.float32)
-
-    def __call__(self, audio_chunk: np.ndarray) -> float:
-        """输入 float32 音频（任意长度），返回 0.0~1.0 的人声概率"""
-        # Silero VAD 要求 512 采样点的小窗口（16kHz = 32ms）
-        WINDOW = 512
-        chunk = audio_chunk.astype(np.float32)
-        
-        # 如果音频太短，直接补零处理
-        if len(chunk) < WINDOW:
-            chunk = np.pad(chunk, (0, WINDOW - len(chunk)))
-        
-        # 拆分成小窗口逐帧处理，取最大概率
-        max_prob = 0.0
-        for i in range(0, len(chunk) - WINDOW + 1, WINDOW):
-            window = chunk[i:i + WINDOW]
-            input_tensor = window[np.newaxis, :]
-            ort_inputs = {
-                'input': input_tensor,
-                'sr': np.array([16000], dtype='int64'),
-            }
-            if 'state' in self.input_names:
-                ort_inputs['state'] = self._state
-                out, new_state = self.session.run(None, ort_inputs)
-                self._state = new_state
-            elif 'h' in self.input_names and 'c' in self.input_names:
-                ort_inputs['h'] = self._h
-                ort_inputs['c'] = self._c
-                out, h, c = self.session.run(None, ort_inputs)
-                self._h, self._c = h, c
-            else:
-                out = self.session.run(None, ort_inputs)[0]
-            max_prob = max(max_prob, float(out[0][0]))
-        
-        return max_prob
 
 # ================= 🧠 智能分段器 =================
 class SubtitleSegmenter:
@@ -371,144 +303,6 @@ class SubtitleOverlay:
         self.text_box.config(state="disabled")
 
 
-# ================= 🎧 音频捕获 =================
-class BaseStream:
-    def __init__(self):
-        self.p = pyaudio.PyAudio()
-        self.q = queue.Queue()
-        self.rate = SAMPLE_RATE
-
-    def callback(self, in_data, frame_count, time_info, status):
-        self.q.put(in_data)
-        return (None, pyaudio.paContinue)
-
-
-class LoopbackStream(BaseStream):
-    def start(self):
-        if not HAS_LOOPBACK: raise Exception("pyaudiowpatch not installed")
-
-        wasapi_index = None
-        for i in range(self.p.get_host_api_count()):
-            if self.p.get_host_api_info_by_index(i)["type"] == pyaudio.paWASAPI:
-                wasapi_index = i
-                break
-
-        if wasapi_index is None: raise Exception("WASAPI not found")
-
-        wasapi_info = self.p.get_host_api_info_by_index(wasapi_index)
-        default_out = self.p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-
-        target = next((l for l in self.p.get_loopback_device_info_generator() if default_out["name"] in l["name"]), None)
-        if not target:
-            target = list(self.p.get_loopback_device_info_generator())[0]
-
-        self.src_rate = int(target["defaultSampleRate"])
-        self.src_channels = target["maxInputChannels"]
-
-        self.stream = self.p.open(
-            format=pyaudio.paInt16, channels=self.src_channels, rate=self.src_rate,
-            input=True, input_device_index=target["index"],
-            frames_per_buffer=int(self.src_rate * 0.032),
-            stream_callback=self.callback
-        )
-        print(f"✅ Loopback started: {target['name']}")
-        return self
-
-    def process_data(self, data):
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        if self.src_channels > 1: audio = audio.reshape(-1, self.src_channels).mean(axis=1)
-        if self.src_rate != 16000:
-            num_samples = int(len(audio) * 16000 / self.src_rate)
-            audio = np.interp(np.linspace(0, len(audio)-1, num_samples), np.arange(len(audio)), audio)
-        return audio.astype(np.float32)
-
-    def get_chunk(self):
-        chunks = []
-        current_samples = 0
-        while current_samples < CHUNK_SAMPLES:
-            try:
-                raw_data = self.q.get(timeout=0.05)
-                processed = self.process_data(raw_data)
-                chunks.append(processed)
-                current_samples += len(processed)
-            except queue.Empty: break
-        return np.concatenate(chunks) if chunks else None
-
-
-class MicStream(BaseStream):
-    def start(self):
-        print("🔍 正在寻找麦克风...")
-        target = None
-        try: target = self.p.get_default_input_device_info()
-        except: pass
-        
-        if not target:
-            for i in range(self.p.get_device_count()):
-                info = self.p.get_device_info_by_index(i)
-                if info['maxInputChannels'] > 0: target = info; break
-        
-        if not target: raise Exception("未找到任何输入设备")
-            
-        print(f"🎤 [Mic] 锁定: {target['name']} (ID: {target['index']})")
-        self.src_rate = int(target["defaultSampleRate"])
-        self.src_channels = target["maxInputChannels"]
-        
-        # 对应 16k 下ের 512 点，换算到源采样率
-        chunk_src = int(self.src_rate * (512 / 16000))
-        
-        self.stream = self.p.open(
-            format=pyaudio.paInt16, channels=self.src_channels, rate=self.src_rate,
-            input=True, input_device_index=target['index'],
-            frames_per_buffer=chunk_src, stream_callback=self.callback
-        )
-        return self
-
-    def process_data(self, data):
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        if self.src_channels > 1: audio = audio.reshape(-1, self.src_channels).mean(axis=1)
-        if self.src_rate != 16000:
-            num_samples = int(len(audio) * 16000 / self.src_rate)
-            audio = np.interp(np.linspace(0, len(audio)-1, num_samples), np.arange(len(audio)), audio)
-        return audio.astype(np.float32)
-
-    def get_chunk(self):
-        chunks = []
-        current_samples = 0
-        while current_samples < CHUNK_SAMPLES:
-            try:
-                raw_data = self.q.get(timeout=0.05)
-                processed = self.process_data(raw_data)
-                chunks.append(processed)
-                current_samples += len(processed)
-            except queue.Empty: break
-        return np.concatenate(chunks) if chunks else None
-
-
-class MixedStream:
-    def __init__(self):
-        self.mic = MicStream()
-        self.loop = LoopbackStream()
-    def start(self):
-        print("🔀 启动混合模式 (Mix Mode)...")
-        loop_ok = False
-        try: self.loop.start(); loop_ok = True
-        except Exception as e: print(f"⚠️ 内录启动失败: {e}"); self.loop = None
-        try: self.mic.start()
-        except Exception as e:
-            print(f"⚠️ 麦克风启动失败: {e}")
-            if not loop_ok: raise Exception("内录和麦克风全都启动失败！")
-        return self
-
-    def get_chunk(self):
-        m_chunk = self.mic.get_chunk()
-        l_chunk = self.loop.get_chunk() if self.loop else None
-        
-        if m_chunk is not None and l_chunk is not None:
-            min_len = min(len(m_chunk), len(l_chunk))
-            return (m_chunk[:min_len] + l_chunk[:min_len]) / 2
-        return m_chunk if m_chunk is not None else l_chunk
-
-
 # ================= 🔗 WebSocket 客户端 =================
 class ASRClient:
     def __init__(self, overlay: SubtitleOverlay, save_on=False, save_dir="", audio_format="wav"):
@@ -565,17 +359,30 @@ class ASRClient:
         threading.Thread(target=self._capture_thread, daemon=True).start()
 
     def _capture_thread(self):
+        buf = []
+        buf_samples = 0
         while self.is_running:
-            chunk = self.stream.get_chunk()
-            if chunk is not None:
-                # 如果开启录音，写入 wav 文件
+            try:
+                frame = self.stream.read()
+            except Exception:
+                time.sleep(0.005)
+                continue
+
+            if frame is None or len(frame) == 0:
+                time.sleep(0.005)
+                continue
+
+            buf.append(frame)
+            buf_samples += len(frame)
+
+            if buf_samples >= CHUNK_SAMPLES:
+                chunk = np.concatenate(buf)[:CHUNK_SAMPLES]
                 if self.wav_file:
-                    # 将 float32 转回 int16 保存
                     audio_int16 = (chunk * 32767).astype(np.int16)
                     self.wav_file.writeframes(audio_int16.tobytes())
-                
                 self.loop.call_soon_threadsafe(self.audio_queue.put_nowait, chunk)
-            time.sleep(0.01)
+                buf = []
+                buf_samples = 0
 
     def _worker_thread(self, mode, language):
         asyncio.set_event_loop(self.loop)

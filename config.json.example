@@ -1,0 +1,5 @@
+{
+  "conda_root": "YOUR_CONDA_ROOT",
+  "offline_python": "YOUR_PYTHON_PATH",
+  "live_env_name": "asr_ui_env"
+}

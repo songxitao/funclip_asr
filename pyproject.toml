@@ -4,30 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "funclip-pro"
-version = "0.1.0"
-description = "ASR + Speaker Diarization system with OfflinePipeline"
+version = "0.8.0"
+description = "边缘设备极致对齐的 ASR & 说话人分离系统"
+authors = [{name = "FunClip Pro Contributors"}]
+license = "Apache-2.0"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "librosa",
     "soundfile",
     "scikit-learn>=1.3.2",
     "funasr>=1.1.2",
-    "moviepy==1.0.3",
     "numpy==1.26.4",
     "gradio",
-    "modelscope",
-    "torch>=1.13",                    # CUDA 12.1 (cu121)
+    "torch>=1.13",
     "torchaudio",
-    "openai",
-    "g4f",
-    "dashscope",
-    "curl_cffi",
-    "funasr-onnx",
     "onnxruntime-gpu[cuda,cudnn]",
     "fastapi",
     "uvicorn",
+    "websockets",
+    "requests",
+    "pyaudio",
+    "pyaudiowpatch; sys_platform == 'win32'",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = {find = {where = ["src"]}}
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+markers = [
+    "slow: 需要加载真实 ML 模型（ASR/VAD/说话人识别）或外部服务，运行较慢",
+]
+addopts = "-m 'not slow' -q --tb=short --ignore=tests/archive"
+
+[project.urls]
+Homepage = "https://github.com/"
+Repository = "https://github.com/"
+Documentation = "https://github.com/"
+
+[project.scripts]
+funclip-pro = "funclip_pro.cli:main"
