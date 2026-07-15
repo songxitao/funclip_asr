@@ -41,7 +41,7 @@ graph TD
     ASR --> ASR_Texts[ASR 文本段与毫秒级时间戳]
     
     Audio --> SegEngine[SegmentationEngine]
-    subgraph Diarization Pipeline (seg_clustering)
+    subgraph "Diarization Pipeline (seg_clustering)"
         SegEngine --> Chunks[10s 无重叠分块推理]
         Chunks --> Powerset[Powerset 解码与 CPU 多标签转换]
         Powerset --> FrameFilter[帧级单人过滤 17ms 精度]
