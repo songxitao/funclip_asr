@@ -5,6 +5,8 @@
   <img src="https://img.shields.io/badge/PyTorch-2.3.1%2Bcu121-green.svg" alt="PyTorch 2.3.1"/>
   <img src="https://img.shields.io/badge/CUDA-12.1-orange.svg" alt="CUDA 12.1"/>
   <img src="https://img.shields.io/badge/License-Apache%202.0-red.svg" alt="License"/>
+  <img src="https://img.shields.io/badge/tests-30%20passed-brightgreen.svg" alt="Tests"/>
+  <img src="https://img.shields.io/badge/CLI-funclip--pro-blue.svg" alt="CLI"/>
 </p>
 
 <p align="center">
@@ -76,24 +78,28 @@ graph TD
 ## 🚀 快速开始 (Quick Start) <a id="quickstart"></a>
 
 ### 1. 配置要求
-- 操作系统：Windows 10 / 11 
-- Python 环境：Python 3.11 (推荐使用 conda 安装在 `E:\conda\envs\asr_ui_env`)
-- 显卡驱动：推荐支持 CUDA 12.1+ 的 Nvidia GPU
+- 操作系统：Windows 10 / 11（Linux/macOS 需自行适配声卡采集）
+- Python 环境：Python >= 3.10
+- 显卡驱动：推荐支持 CUDA 12.1+ 的 Nvidia GPU（CPU 模式亦可运行）
 
 ### 2. 闪电部署
 ```bash
 git clone <repo_url>
 cd funclip-pro
-# 以可编辑模式一键安装 funclip_pro 算法包及其依赖，消除了 sys.path 动态挂载
-E:\conda\envs\asr_ui_env\python.exe -m pip install -e .
+# 一键安装 funclip_pro 算法包及所有依赖
+pip install -e .
 ```
 
-### 3. 一键启动服务
-在根目录下双击运行 `一键启动_ASR_API服务.bat` 或在控制台运行：
+### 3. 一键启动
+在根目录下双击运行对应批处理脚本：
+- `一键启动_ASR_API服务.bat` — FastAPI 离线转写服务（默认 8002 端口）
+- `一键启动_本地实时字幕.bat` — 桌面实时字幕悬浮窗
+- `一键启动_集成控制台.bat` — Gradio 图形界面
+
+或通过 CLI 命令行：
 ```bash
-E:\conda\envs\asr_ui_env\python.exe asr_onnx_service.py
+funclip-pro transcribe audio.wav --diarize --format srt
 ```
-服务将在后台初始化，并默认绑定 `8002` 端口。
 
 ---
 
@@ -170,48 +176,30 @@ print(response.json())
 }
 ```
 
-### 命令行客户端
+### 命令行客户端 (CLI)
 
 ```bash
-# 默认 JSON 输出
-E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize
+# 安装后可直接使用
+funclip-pro transcribe audio.wav --diarize
 
 # 纯文本输出
-E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize --format text
+funclip-pro transcribe audio.wav --diarize --format text
 
 # SRT 字幕输出（同说话人相邻段已合并）
-E:\conda\envs\asr_ui_env\python.exe cli_transcribe.py audio.wav --diarize --format srt
+funclip-pro transcribe audio.wav --diarize --format srt
 ```
 
 ---
 
-## 🏗️ 版本演进 (Changelog)
+## 📜 版本演进
 
-### v0.6 — 外壳应用统一归口与物理清理 (P3 阶段) 🏆
-- **Gradio 离线应用进程内归口**：重构了 [app_control.py](file:///E:/project/funclip-pro/app_control.py) 里的离线转写，废除 `subprocess.Popen` CMD 弹窗调用，改为在 Python 进程内通过惰性加载延迟实例化并直接调用核心 `OfflinePipeline.run()`，并在进程内完成文本与 SRT 字幕的物理写入，完全兼容原有输出结果。
-- **废弃冗余大文件物理清理**：在离线界面归口验证后，彻底物理删除了孤立冗余的单文件引擎 `funclip/asr1.py` (119KB) 以及 `funclip/launch.py` 及其依赖；物理清除了 `funclip/asr1 copy.py` 等 5 个 0 引用的历史备份文件，彻底净化代码库结构。
-- **常规测试全绿大满贯**：同步修复了 [test_seg_seamless.py](file:///E:/project/funclip-pro/tests/test_seg_seamless.py) 等测试文件的下沉导入问题，56 个核心用例中 **55 PASSED, 1 SKIPPED 绿灯通过**。
+完整的版本历史请参阅 [CHANGELOG.md](./CHANGELOG.md)，关键里程碑：
 
-### v0.5 — 精度闭环与构建标准化
-- **DER 评测文件名对齐修复**：`der_eval.py` 新增 `_normalize_stem()` 自动剥离 Ali 数据集 `_mixed`/`_near`/`_far` 后缀；0 匹配时 `exit(1)` 终止，杜绝静默 DER=0.0% 假绿
-- **双分支 DER 精度验证门禁**：Git 分支回退跑测旧代码 19.69% vs P1 19.95%（+0.26%，GPU 波动 ±1% 阈值内），数学证明 P1 算法下沉重构零精度退化
-- **根目录"真相源唯一"清理**：物理删除已被包化的 `segmentation_engine.py`(321行)、`speaker_engine.py`(567行)、`asr_service.py`(8.7KB)；11 处测试 import 同步更新至 `funclip_pro.core.*`
-- **PEP-517 构建系统**：新增 `pyproject.toml`，支持 `pip install -e .` 一键安装，`numpy==1.26.4` 红线锁死；3 个外壳脚本移除 `sys.path.insert` 动态挂载
-- **测试冲突归档**：5 个在模块顶层替换 `sys.stdout`/`sys.stderr` 的致命测试转移至 `tests/archive/`，常规 `pytest tests/` 可安全执行（37/40 通过，3 项 pre-existing 失败）
-
-### v0.3 — SRT 输出 + 同说话人合并
-- 新增 SRT 字幕输出格式（`response_format=srt`）
-- 相邻同说话人自动合并（JSON/text/SRT 统一受益）
-- 合并限制在 VAD 段内部（不跨段）
-- CLI 新增 `--format {json,text,srt}` 参数
-
-### v0.2 — 无缝说话人时间轴
-- seg-3.0 输出所有帧段（含重叠/静音），构建无缝时间轴
-- 锚点扩散逻辑回收 seg 丢弃段（MISS 11.3% → 0.7%）
-- DER 从 15.13% → 14.54%
-- 新增 cli_transcribe.py 命令行客户端
-
-### v0.1 — seg_clustering 基础框架
-- Segmentation-3.0 帧级单人提取 + Cam++ + SpectralClustering
-- CONF 从 46.8% → 3.8%
-- DER 15.13%
+| 版本 | 里程碑 |
+|:----:|--------|
+| **v0.8** | 🏆 开源发布准备 — LICENSE、CHANGELOG、CLI 入口、测试重组、硬编码解耦 |
+| **v0.7** | P3.2 流式重构 — core.audio/streaming_asr 下沉、Qwen3 集成、打字预览、VAD 隔离 |
+| **v0.6** | P3 外壳收口 — app_control 进程内 OfflinePipeline、物理清理 |
+| **v0.5** | 精度闭环 + 构建标准化 — pyproject.toml、DER 门禁 |
+| **v0.3-v0.2** | 说话人分离完善 — SRT 输出、无缝时间轴 |
+| **v0.1** | seg_clustering 基础 — CONF 3.8% |

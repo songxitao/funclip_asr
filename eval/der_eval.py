@@ -13,13 +13,13 @@ DER 定义: DER = (Missed + FalseAlarm + Confusion) / 总参考语音时长（co
 
 用法:
   # 单条会议（验证管线，约 40min 音频，推理数分钟）
-  python der_eval.py \
+  python eval/der_eval.py \
       --audio_dir E:/project/funclip-pro/testset/dia-aishell4-test/audio/test \
       --rttm_dir  E:/project/funclip-pro/testset/dia-aishell4-test/rttm/test \
       --limit 1 --out test_results/der_single.json
 
   # 全量 20 条（可选，耗时约 1-2h）
-  python der_eval.py ... --limit 0 --out test_results/der_full.json
+  python eval/der_eval.py ... --limit 0 --out test_results/der_full.json
 """
 import argparse
 import os
@@ -32,6 +32,10 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+# 迁移后：脚本在 eval/，项目根在 os.path.dirname(os.path.dirname(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 
 
 def _normalize_stem(stem: str) -> str:
@@ -167,7 +171,7 @@ def main():
     ap.add_argument("--limit", type=int, default=1)
     ap.add_argument("--collar", type=float, default=0.25)
     ap.add_argument("--step", type=float, default=0.01)
-    ap.add_argument("--out", default="test_results/der_single.json")
+    ap.add_argument("--out", default=os.path.join(_PROJECT_ROOT, "test_results", "der_single.json"))
     ap.add_argument("--diarize_strategy", default="spectral",
                     choices=["single", "two_stage", "spectral", "vad_sliding", "seg_clustering"],
                     help="说话人聚类策略（默认 spectral）")

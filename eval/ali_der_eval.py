@@ -3,13 +3,16 @@
 AliMeeting near 单场 DER 评测（试跑）。
 混合单通道 wav -> flac(规避50MB) -> POST :8002/transcribe?diarize=true -> DER
 用 conda asr_ui_env python 跑。
-用法: python ali_der_eval.py <场ID>
+用法: python eval/ali_der_eval.py <场ID>
 """
 import sys, json, time, requests, soundfile as sf
 from pathlib import Path
 from der_eval import compute_der, parse_rttm
 
-PREP = Path(r"E:\project\funclip-pro\testset\ali_near_prep")
+# 迁移后：脚本在 eval/，项目根在其父目录
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+PREP = _PROJECT_ROOT / "testset" / "ali_near_prep"
 URL = "http://localhost:8002/transcribe"
 
 

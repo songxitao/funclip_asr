@@ -23,6 +23,8 @@ torch.set_num_threads(4)
 from funasr import AutoModel
 from utils.model_bin import SenseVoiceSmallONNX
 
+pytestmark = pytest.mark.slow
+
 
 class SenseVoiceSmall(SenseVoiceSmallONNX):
     """包装类，重写了初始化和调用，适配用户要求的接口"""

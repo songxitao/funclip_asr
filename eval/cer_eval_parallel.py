@@ -8,7 +8,7 @@ AISHELL-1 CER 并行评测器（GPU 提速版）
 - 断点续跑：每条结果写 JSONL，重跑自动跳过已完成 utt
 
 用法:
-  python cer_eval_parallel.py \
+  python eval/cer_eval_parallel.py \
       --wav_dir E:/project/funclip-pro/testset/aishell1_test_extracted/wav \
       --transcript E:/project/funclip-pro/testset/aishell1_test_extracted/transcript.txt \
       --engine gpu --sample 1000 --workers 4 \
@@ -27,6 +27,10 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+
+# 迁移后：脚本在 eval/，项目根在 os.path.dirname(os.path.dirname(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 
 PUNCT = set("，。！？、；：,.!?;:\u3000\t\n\r"
             "“”‘’\"'《》〈〉（）()【】[]「」『』"
@@ -101,7 +105,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--out", default="test_results/cer_sample.jsonl")
+    ap.add_argument("--out", default=os.path.join(_PROJECT_ROOT, "test_results", "cer_sample.jsonl"))
     ap.add_argument("--keep-punct", action="store_true")
     args = ap.parse_args()
 

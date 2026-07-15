@@ -7,13 +7,14 @@
 #
 # Usage (new PowerShell window):
 #   cd E:\project\funclip-pro
-#   .\run_cer_test.ps1
+#   .\eval\run_cer_test.ps1
 #
 # Note: all paths are ASCII to avoid GBK/UTF-8 encoding issues on Windows.
 
 $ErrorActionPreference = "Continue"
 
-$ROOT       = "E:\project\funclip-pro"
+# 迁移后：脚本在 eval/，项目根为其父目录
+$ROOT       = Split-Path $PSScriptRoot -Parent
 $WAV_DIR    = "$ROOT\testset\aishell1_test_extracted\wav"
 $TRANSCRIPT = "$ROOT\testset\aishell1_test_extracted\transcript.txt"
 $BASE_URL   = "http://localhost:8002"
@@ -62,8 +63,8 @@ if (-not (Test-Port $BASE_URL)) {
 
 # ---- run CER eval ----
 Write-Host "[*] running CER eval on AISHELL-1 test (7176 utts) ..."
-python "$ROOT\cer_eval.py" --wav_dir $WAV_DIR --transcript $TRANSCRIPT --base_url $BASE_URL
+python "$ROOT\eval\cer_eval.py" --wav_dir $WAV_DIR --transcript $TRANSCRIPT --base_url $BASE_URL
 
 Write-Host ""
 Write-Host "[done] ASR service is still running in background (log: $SERVICE_LOG)."
-Write-Host "        To stop it: close its window, or run: Stop-Process -Name python"
+Write-Host "        To stop it: close its window, or run: Stop-Process -Name python

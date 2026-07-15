@@ -1,6 +1,9 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
+
+pytestmark = pytest.mark.slow
 
 def test_punc_model_loaded():
     import asr_onnx_service as asr_service

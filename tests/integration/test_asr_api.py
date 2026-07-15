@@ -6,6 +6,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.slow
+
 # 引入微服务应用
 from asr_onnx_service import app
 

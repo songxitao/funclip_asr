@@ -8,6 +8,8 @@ import struct
 import requests
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 def _generate_sine_wav(path, duration_sec=1.0, freq=440, sr=16000):
     """动态生成 1 秒 16kHz 单声道正弦波 WAV 文件用于测试"""

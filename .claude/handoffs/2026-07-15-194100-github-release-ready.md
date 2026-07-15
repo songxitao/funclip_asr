@@ -1,10 +1,10 @@
 # Handoff: GitHub 开源发布 v0.8.0 准备完成
 
 ## Session Metadata
-- Created: 2026-07-15 20:07
+- Created: 2026-07-15 19:41
 - Project: E:\project\funclip-pro
-- Branch: main (工作区有未提交变更 — CLI 入口 + eval 迁移 + 测试修复)
-- Session focus: v0.8.0 GitHub 开源发布准备 — 基础设施、CLI 入口、eval 迁移、测试修复
+- Branch: main (工作区 Clean — 已提交 `6a156d1`)
+- Session focus: v0.8.0 GitHub 开源发布准备 — 基础设施、环境解耦、测试重组、文档
 - Worked by: WorkBuddy AI Agent (会话 ID: 2026-07-15-18-46-57)
 
 ### Recent Commits
@@ -21,7 +21,7 @@
 
 ## Current State Summary
 
-已完成 **P0/P1/P1.5/P2/P3.1/P3.3/P3.2 + 安全审计 + v0.8.0 开源发布准备**，以及 **Ticket 14/15 CLI + eval 迁移**。
+已完成 **P0/P1/P1.5/P2/P3.1/P3.3/P3.2 + 安全审计 + v0.8.0 开源发布准备**。
 
 项目已达到 GitHub 公开推送的状态：
 - ✅ Apache 2.0 LICENSE
@@ -53,9 +53,6 @@
 | `pyproject.toml` | 完整构建系统 + pytest 配置 |
 | `.gitignore` | 安全过滤规则补充 |
 | `README.md` | 更新为便携部署指引 |
-| `src/funclip_pro/cli.py` | CLI 入口 `main()` — 供 `funclip-pro` 命令调用 |
-| `eval/` | 迁移 8 个评测脚本（der_eval/cer_eval 等）至独立目录 |
-| `.scratch/cli-and-eval-refactor/issues/` | Ticket 14/15/16 任务书 |
 | `.scratch/refactor-alignment/issues/` | 13 个 tracer-bullet ticket 文件 |
 
 ---
@@ -78,19 +75,18 @@
 
 ## 下一步行动
 
-### 执行状态
+### 建议的执行顺序
 
-| # | 任务 | 状态 |
-|:-:|------|:----:|
-| 1 | **Ticket 14: CLI 入口点** — `src/funclip_pro/cli.py` 已创建，`main()` 已实现，`pyproject.toml` 已绑定 | ✅ 已完成 |
-| 2 | **Ticket 15: eval 脚本迁移** — 8 个评测脚本迁至 `eval/`，路径已修复，根目录无残留 | ✅ 已完成 |
-| 3 | **Ticket 16: 端到端验证** — `pytest` unit 全绿 ✅ 已验证；`pytest -m slow` 可选 | ⏳ 可选 |
-| 4 | **提交本次变更** | ⏳ |
-| 5 | **推送到 GitHub** | ⏳ |
-| 6 | **创建 GitHub Release v0.8.0** | ⏳ |
+| # | 任务 | 说明 |
+|:-:|------|------|
+| 1 | **推送到 GitHub** | `git push origin main` → GitHub 仓库显示 LICENSE、CHANGELOG |
+| 2 | **创建 GitHub Release** | `git tag v0.8.0 && git push --tags` → Draft release，贴 CHANGELOG v0.8.0 内容 |
+| 3 | **合并 README（可选）** | 将 `README.md` + `README_REFACTORING.md` 融合为一份完整 README |
+| 4 | **端到端验证** | 在有硬件的 Windows 机器上启动各一键启动脚本验证功能完整性 |
+| 5 | **补充 CONTRIBUTING.md（可选）** | 定义代码格式、分支规范、单测契约 |
 
 ### Potential Gotchas
-- `cli_transcribe.py` 已委托至 `funclip_pro.cli.main()`，两者均可独立运行
+- `funclip_pro.cli:main` CLI 入口尚未实现实际代码，需要创建 `src/funclip_pro/cli.py`
 - 一键启动 bat 脚本在 `config.json` 不存在时的友好提示已在 `app_control.py` 中处理
 - `pytest` 默认只跑 unit/ 的 10 个文件，不加载任何模型，3 秒内完成
 - GPU 测试环境：`E:/conda/envs/asr_ui_env/python.exe` (torch 2.3.1+cu121, RTX 4080 Laptop GPU)

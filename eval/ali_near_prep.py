@@ -4,7 +4,7 @@ AliMeeting near 预处理验证脚本（单场试跑）。
 作用：每场 3 个领夹麦(near) wav -> 相加成单通道混合 wav（模拟1个近场麦收3人）
       每场 3 个 TextGrid -> 合并成参考 RTTM（谁在何时说话）
 零第三方依赖，仅用标准库 wave/array/re。
-用法：python ali_near_prep.py <场ID如 R8002_M8002>
+用法：python eval/ali_near_prep.py <场ID如 R8002_M8002>
 """
 import wave
 import array
@@ -13,8 +13,11 @@ import sys
 import os
 from pathlib import Path
 
-BASE = Path(r"E:\project\funclip-pro\testset\Test_Ali\Test_Ali\Test_Ali_near")
-OUT = Path(r"E:\project\funclip-pro\testset\ali_near_prep")
+# 迁移后：脚本在 eval/，项目根在其父目录
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+BASE = _PROJECT_ROOT / "testset" / "Test_Ali" / "Test_Ali" / "Test_Ali_near"
+OUT = _PROJECT_ROOT / "testset" / "ali_near_prep"
 OUT.mkdir(parents=True, exist_ok=True)
 
 

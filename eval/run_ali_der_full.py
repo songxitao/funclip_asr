@@ -4,7 +4,7 @@
 流程：每场混音+RTTM(ali_near_prep) -> POST :8002?diarize_strategy=sliding -> DER -> 加权平均。
 
 用法:
-    E:/conda/envs/asr_ui_env/python.exe run_ali_der_full.py [--strategy sliding|spectral|two_stage]
+    python eval/run_ali_der_full.py [--strategy sliding|spectral|two_stage]
 
 前置：
     1) :8002 服务在跑（含 sliding 改动）
@@ -17,6 +17,10 @@ from pathlib import Path
 
 from ali_near_prep import BASE as NEAR_BASE, OUT as PREP_OUT, mix_to_mono, write_wav_mono, build_rttm
 from ali_der_eval import eval_one
+
+# 迁移后：脚本在 eval/，项目根在其父目录
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
 
 STRATEGY = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "--strategy" else "sliding"
 
@@ -68,7 +72,7 @@ def eval_full():
     print(f"\n===== 全量 {len(results)} 场 加权平均 =====")
     print(f"global DER = {gder * 100:.2f}%")
     print(f"FA={gFA} MISS={gMISS} CONF={gCONF} REF={gREF}")
-    out_dir = Path("test_results")
+    out_dir = _PROJECT_ROOT / "test_results"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"ali_der_full_{STRATEGY}.json"
     out = {

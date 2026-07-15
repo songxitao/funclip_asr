@@ -3,6 +3,9 @@ import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
 import torch
+import pytest
+
+pytestmark = pytest.mark.slow
 
 
 class TestSegmentationEngine(unittest.TestCase):

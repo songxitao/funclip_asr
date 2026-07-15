@@ -13,12 +13,12 @@ AISHELL-1 字错率(CER)评测脚本
 
 用法:
   # 先 dry-run 验证 wav 与标注匹配 (不调服务, 零依赖)
-  python cer_eval.py --wav_dir /e/project/funclip-pro/testset/AISHELL-1/extracted \
+  python eval/cer_eval.py --wav_dir /e/project/funclip-pro/testset/AISHELL-1/extracted \
                      --transcript /e/project/funclip-pro/testset/AISHELL-1/data_aishell/transcript/aishell_transcript_v0.8.txt \
                      --dry-run
 
   # 正式评测 (限前 200 条先验证流程)
-  python cer_eval.py --wav_dir .../extracted --transcript .../aishell_transcript_v0.8.txt \
+  python eval/cer_eval.py --wav_dir .../extracted --transcript .../aishell_transcript_v0.8.txt \
                      --limit 200 --base_url http://localhost:8002
 
 说明:

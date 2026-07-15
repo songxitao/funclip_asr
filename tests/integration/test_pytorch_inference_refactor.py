@@ -4,6 +4,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import asr_onnx_service as asr_service
 
+pytestmark = pytest.mark.slow
+
 def test_run_inference_with_punc(monkeypatch):
     # 确保模型加载
     if asr_service.MODEL is None:

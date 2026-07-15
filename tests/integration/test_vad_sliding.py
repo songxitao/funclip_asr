@@ -3,6 +3,8 @@ import numpy as np
 from unittest.mock import MagicMock, patch
 from funclip_pro.core.speaker import CampPlusSpeaker
 
+pytestmark = pytest.mark.slow
+
 class MockTensor:
     """模拟带有 cpu().numpy() 接口的 Tensor 对象"""
     def __init__(self, data):

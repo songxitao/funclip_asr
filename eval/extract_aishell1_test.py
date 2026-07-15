@@ -7,10 +7,10 @@
   pip install datasets soundfile
 
   # 2) 先小批量验证（200 条）
-  python extract_aishell1_test.py --out_dir E:/project/funclip-pro/testset/aishell1_test_extracted --limit 200
+  python eval/extract_aishell1_test.py --out_dir E:/project/funclip-pro/testset/aishell1_test_extracted --limit 200
 
   # 3) 全量抽取
-  python extract_aishell1_test.py --out_dir E:/project/funclip-pro/testset/aishell1_test_extracted
+  python eval/extract_aishell1_test.py --out_dir E:/project/funclip-pro/testset/aishell1_test_extracted
 """
 import os
 import argparse

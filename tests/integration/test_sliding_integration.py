@@ -12,6 +12,9 @@ import tempfile
 
 import numpy as np
 from unittest.mock import patch
+import pytest
+
+pytestmark = pytest.mark.slow
 
 
 def test_run_inference_sliding_returns_speaker_segments():

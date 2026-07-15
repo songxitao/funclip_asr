@@ -1,5 +1,8 @@
 import numpy as np
 import torch
+import pytest
+
+pytestmark = pytest.mark.slow
 
 def test_numpy_decode_equivalence():
     """

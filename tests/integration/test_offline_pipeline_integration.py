@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # 仅在显式开启时运行（避免默认 pytest 套件触发重型模型加载）
 RUN_ML = os.environ.get("FUNCLIP_INTEGRATION") == "1"
 
-pytestmark = [pytest.mark.ml, pytest.mark.skipif(not RUN_ML, reason="需 FUNCLIP_INTEGRATION=1 才跑真实 ML 集成")]
+pytestmark = [pytest.mark.slow, pytest.mark.ml, pytest.mark.skipif(not RUN_ML, reason="需 FUNCLIP_INTEGRATION=1 才跑真实 ML 集成")]
 
 
 @pytest.fixture(scope="module")

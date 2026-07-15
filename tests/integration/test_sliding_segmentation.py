@@ -1,5 +1,8 @@
 import numpy as np
 from funclip_pro.core.speaker import segment_sliding_window
+import pytest
+
+pytestmark = pytest.mark.slow
 
 
 def test_sliding_window_basic():

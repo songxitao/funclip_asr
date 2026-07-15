@@ -36,8 +36,8 @@ def _import_streaming_asr():
     import funclip_pro.config
 
     # 定位 streaming_asr.py 的物理路径
-    test_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(test_dir)
+    test_dir = os.path.dirname(os.path.abspath(__file__))           # tests/unit/
+    project_root = os.path.dirname(os.path.dirname(test_dir))      # 项目根目录
     module_path = os.path.join(
         project_root, "src", "funclip_pro", "core", "streaming_asr.py"
     )
