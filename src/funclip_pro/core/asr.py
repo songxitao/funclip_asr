@@ -25,9 +25,11 @@ import re
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import numpy as np
+import io
+import soundfile as sf
 
 # 路径解耦：统一由 config.loader 解析模型目录，零硬编码盘符/绝对路径。
 from funclip_pro.config.loader import resolve_model_path
@@ -529,7 +531,7 @@ class QwenEngine:
         result = self.transcribe(audio_path)
         return result["text"]
 
-    def transcribe_batch(self, audio_paths: List[str], language: str = "auto") -> List[dict]:
+    def transcribe_batch(self, audio_paths: Union[List[str], List[np.ndarray]], language: str = "auto") -> List[dict]:
         """批量转写音频文件。
 
         Args:
@@ -576,6 +578,52 @@ class QwenEngine:
         }
         lang_key = str(language[0] if isinstance(language, list) else language).lower() if language else "auto"
         api_lang = _QWEN3_LANG_MAP.get(lang_key, language)
+
+        # --- In-memory batch path: numpy 数组输入，单次 Base64 批量 POST ---
+        if audio_paths and isinstance(audio_paths[0], np.ndarray):
+            import base64
+            import io
+            import soundfile as sf
+            import requests
+
+            b64_list = []
+            for chunk in audio_paths:
+                buffer = io.BytesIO()
+                sf.write(buffer, np.asarray(chunk, dtype=np.float32), 16000,
+                         format='WAV', subtype='PCM_16')
+                wav_bytes = buffer.getvalue()
+                buffer.close()
+                b64_list.append(base64.b64encode(wav_bytes).decode("utf-8"))
+
+            payload = {
+                "language": api_lang,
+                "return_timestamps": True,
+                "audio_batch_base64": b64_list,
+            }
+
+            try:
+                res = requests.post(
+                    f"{self.host}/v1/audio/batch_transcriptions",
+                    json=payload,
+                    timeout=(5.0, 90.0),
+                )
+                if res.status_code != 200:
+                    raise RuntimeError(f"API Error {res.status_code}: {res.text}")
+                data = res.json()
+                if isinstance(data, dict) and "results" in data:
+                    return data["results"]
+                elif isinstance(data, list):
+                    return data
+                return [data]
+            except requests.exceptions.ConnectTimeout as e:
+                self.logger.error("[QwenEngine] Docker ASR 服务连接超时(5s): %s", e)
+                raise RuntimeError("Docker ASR 服务连接超时") from e
+            except requests.exceptions.ReadTimeout as e:
+                self.logger.error("[QwenEngine] Docker ASR 服务响应超时(90s): %s", e)
+                raise RuntimeError("Docker ASR 服务响应超时") from e
+            except requests.exceptions.ConnectionError as e:
+                self.logger.error("[QwenEngine] Docker ASR 服务无法连接: %s", e)
+                raise RuntimeError("Docker ASR 服务无法连接") from e
 
         import base64
         import requests

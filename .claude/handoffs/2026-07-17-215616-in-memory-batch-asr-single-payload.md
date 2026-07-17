@@ -4,7 +4,7 @@
 - Created: 2026-07-17 21:56:16
 - Project: E:\project\funclip-pro
 - Branch: main
-- Session duration: ~3 hours (21:17 - 00:25)
+- Session duration: ~40 minutes (21:17 - 21:56)
 
 ### Recent Commits (for context)
   - 461cd22 feat: 修复集成客户端假死失效、集成宿主机 VAD 切割及 Qwen3-ASR vLLM 参数调优与共享卷优化
@@ -22,11 +22,7 @@
 
 ## Current State Summary
 
-本会话完成了 Qwen3-ASR 批量转写方案的**架构转变**：从"多路 aiohttp 异步并发流式"切换到"单次同步 Base64 批量 POST"。此前 grilling 会话达到了新共识（低耦合、无盘化批量重构），并落地了 `spec.md`（规格书）和 3 个垂直切片 Ticket。本会话派出子智能体实现了全部 3 个 Ticket 的代码变更，验证了语法正确性，并在用户启动 Docker 后端后运行了完整基准测试——**34min 长音频端到端 Pipeline 达到 70.2s / RTF 0.034 / 29.4 倍速**，超越旧基线（24.2x）21.5%，远优于旧异步方案（18.3x）。
-
-后续进行了 micro_batch_size A/B 实验（64 vs 8），验证了 **64 是经验最优值**（8 导致批量性能减半、Pipeline 超时）。随后在 Gemini 深度分析指导下，定位到宿主机 98% 内存打满引发的 Windows 内核 Swap 抖动是 Pipeline 超时和 CPU 高占用的根因，通过配置 `.wslconfig memory=16GB` 锁死 WSL2 内存上限完成 **P0 修复**，经基准验证 Pipeline 恢复稳定运行。
-
-当前工作区包含代码实现 + 性能诊断 Ticket（04-06），尚未 commit。
+本会话完成了 Qwen3-ASR 批量转写方案的**架构转变**：从"多路 aiohttp 异步并发流式"切换到"单次同步 Base64 批量 POST"。此前 grilling 会话达到了新共识（低耦合、无盘化批量重构），并落地了 `spec.md`（规格书）和 3 个垂直切片 Ticket。本会话派出子智能体实现了全部 3 个 Ticket 的代码变更，验证了语法正确性，并在用户启动 Docker 后端后运行了完整基准测试——**34min 长音频端到端 Pipeline 达到 71.9s / RTF 0.035 / 28.7 倍速**，超越旧基线（24.2x）15.8%，远优于旧异步方案（18.3x）。当前工作区有 5 个修改文件（含 HANDOFF.md），尚未 commit。
 
 ## Codebase Understanding
 

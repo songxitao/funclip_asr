@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-07-17
+
+### Added
+- 新增 3 个 WSL2 内存与性能诊断优先级 Ticket（`04-wsl2-memory-lock` P0、`05-cpu-hotspot-baseline` P1、`06-vllm-scheduler-overhead` P2）
+- 新增 `test_qwen_engine_transcribe_batch_numpy` 单元测试，覆盖客户端 NumPy→Base64 单次批量路径
+
+### Changed
+- **架构变更**：客户端 `QwenEngine.transcribe_batch` 的 NumPy 入参路径从"异步 aiohttp 并发流式（每 chunk 一条 HTTP 到 `/v1/audio/transcribe_stream`）"彻底重写为"单次同步 `requests.post` 批量 Base64 到 `/v1/audio/batch_transcriptions`"
+- 移除 `_transcribe_single_chunk_async` 及 `aiohttp`/`asyncio` 依赖（不再使用）
+- `micro_batch_size` 经验锁定为 `64`（A/B 实验验证：8 导致端到端 Pipeline 超时，批量性能减半）
+- `HANDOFF.md` 同步最新进度与架构决策
+
+### Fixed
+- **P0 修复**：配置 `.wslconfig memory=16GB` 锁死 WSL2 内存上限，消除宿主机 98% RAM 触发的 Windows 内核 Swap 抖动（原 System 进程占用 57.4% CPU），端到端 Pipeline 恢复稳定
+- `return_timestamps=True` 硬编码确保客户端批量调用始终返回时间戳对齐片段
+
+### Performance
+| 指标 | v0.8.2（旧异步流式） | v0.8.3（新单次批量） | 提升 |
+|------|---------------------|---------------------|------|
+| 34min 端到端 Pipeline | 112.9s / 18.3x（旧） | **70.2s / 29.4x** | **+60.8%** |
+| 单文件 34min 直推 | 85.4s / 24.2x（v0.8.1基线） | 55.0s / 37.0x | +55.3% |
+| 批量10 共享卷直读 | 10.7s / 0.285 | **9.2s / 0.246** | +14.1% |
+
 ## [0.8.1] - 2026-07-17
 
 ### Added

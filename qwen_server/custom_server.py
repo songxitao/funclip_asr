@@ -6,7 +6,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
 os.environ["NUMEXPR_NUM_THREADS"] = "4"
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import List, Optional, Union, Dict, Any
 import torch
@@ -253,7 +253,6 @@ async def transcribe_batch(req: BatchAudioRequest):
     try:
         import tempfile
         import uuid
-        import concurrent.futures
         
         temp_files = []
         is_direct_path = False
@@ -272,33 +271,10 @@ async def transcribe_batch(req: BatchAudioRequest):
             is_direct_path = True
             
         elif req.audio_batch_base64 and len(req.audio_batch_base64) > 0:
-            # 🐢 兼容模式：Base64 解码
-            # Helper function for parallel writing
-            def save_temp_file(b64_data):
-                try:
-                    audio_bytes = base64.b64decode(b64_data)
-                    t_path = f"/tmp/batch_{uuid.uuid4()}.wav"
-                    with open(t_path, "wb") as f:
-                        f.write(audio_bytes)
-                    return t_path
-                except Exception as e:
-                    print(f"❌ Save file failed: {e}")
-                    return None
-    
-            try:
-                # 1. Decode and Save all files (Parallel I/O)
-                # Using ThreadPool to maximize I/O throughput
-                print(f"📥 Received Base64 Request: {len(req.audio_batch_base64)} files")
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, len(req.audio_batch_base64))) as executor:
-                    # Submit all tasks
-                    futures = [executor.submit(save_temp_file, b64) for b64 in req.audio_batch_base64]
-                    # Collect results
-                    for f in concurrent.futures.as_completed(futures):
-                        path = f.result()
-                        if path: temp_files.append(path)
-            except Exception as e:
-                print(f"❌ Base64 Decode Failed: {e}")
+            # 🚀 全内存去盘化批量传输：直接构造 data URL 列表
+            print(f"📥 Received Base64 Request: {len(req.audio_batch_base64)} files")
+            temp_files = [f"data:audio/wav;base64,{b64}" for b64 in req.audio_batch_base64]
+            is_direct_path = True
         else:
             raise HTTPException(status_code=400, detail="Either audio_batch_base64 or audio_paths must be provided")
 
@@ -313,7 +289,7 @@ async def transcribe_batch(req: BatchAudioRequest):
             print(f"🔍 [Server Debug] Processing with language='{qwen_lang}'") # 🔥 Debug Log
             
             results = []
-            micro_batch_size = 64  # ⬆️ 进一步扩大微批次，减少 CPU 准备数据导致的 GPU 空转
+            micro_batch_size = 64  # 经验最优：VAD 200+ 切片时只需 3-4 轮循环，减少 vLLM 调度开销；试过 8 导致批量性能减半、端到端超时
             for start_idx in range(0, len(temp_files), micro_batch_size):
                 chunk_batch = temp_files[start_idx : start_idx + micro_batch_size]
                 batch_results = asr_model.transcribe(
@@ -480,6 +456,72 @@ async def transcribe_audio(req: AudioRequest):
 
     except Exception as e:
         import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/audio/transcribe_stream")
+async def transcribe_stream(
+    file: UploadFile = File(...),
+    language: str = Form("auto"),
+    return_timestamps: bool = Form(False),
+):
+    """
+    纯内存流式转写端点。
+    接收 multipart/form-data 文件上传（预期为 16kHz WAV 格式），
+    通过 base64 data URL 传递给模型推理，不产生任何临时磁盘文件。
+    """
+    global asr_model
+    try:
+        # 1. Read file bytes into memory
+        audio_bytes = await file.read()
+
+        # 2. Base64 编码并构造 data URL（模型支持的输入格式）
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        audio_data_url = f"data:audio/wav;base64,{audio_b64}"
+
+        # 3. Map language code
+        input_lang = str(language).lower() if language else "auto"
+        qwen_lang = QWEN3_LANG_MAP.get(input_lang, language if language else None)
+
+        # 4. Transcribe via data URL（零写盘，全程内存）
+        results = asr_model.transcribe(
+            audio=audio_data_url,
+            language=qwen_lang,
+            return_time_stamps=return_timestamps,
+        )
+
+        res = results[0]
+
+        # 7. Format response
+        response = {
+            "text": res.text,
+            "language": res.language,
+        }
+
+        print(f"\n[STREAM RESULT] Language: {res.language}")
+        print(
+            f"[STREAM RESULT] Text: {res.text[:100]}..."
+            if len(res.text) > 100
+            else f"[STREAM RESULT] Text: {res.text}"
+        )
+        print("-" * 50)
+
+        if return_timestamps and res.time_stamps:
+            timestamps = [
+                {
+                    "text": item.text,
+                    "start": item.start_time,
+                    "end": item.end_time,
+                }
+                for item in res.time_stamps.items
+            ]
+            response["timestamps"] = timestamps
+
+        return response
+
+    except Exception as e:
+        import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

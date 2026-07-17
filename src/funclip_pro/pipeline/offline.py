@@ -189,26 +189,14 @@ class OfflinePipeline:
                 if not opt_segs:
                     return ("", "qwen", [], "")
                 
-                temp_paths = []
+                # 🔥 纯内存路径：直接传 numpy 切片，零磁盘 I/O
                 try:
-                    import tempfile
-                    import soundfile as sf
-                    import os
-                    import sys
+                    chunks = [
+                        y[int(start_ms * 16):int(end_ms * 16)]
+                        for start_ms, end_ms in opt_segs
+                    ]
                     
-                    print(f"[DEBUG SF WRITE] sf module id: {id(sf)}, soundfile in sys.modules id: {id(sys.modules['soundfile'])}, sf.write is: {sf.write}")
-                    for i, (start_ms, end_ms) in enumerate(opt_segs):
-                        s_idx = int(start_ms * 16)
-                        e_idx = int(end_ms * 16)
-                        chunk = y[s_idx:e_idx]
-                        
-                        fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix=f"qwen_chunk_{i}_")
-                        os.close(fd)
-                        temp_paths.append(temp_path)
-                        
-                        sf.write(temp_path, chunk, 16000)
-                    
-                    batch_results = qwen_engine.transcribe_batch(temp_paths, language=lang_param)
+                    batch_results = qwen_engine.transcribe_batch(chunks, language=lang_param)
                     
                     segments = []
                     texts = []
@@ -251,14 +239,6 @@ class OfflinePipeline:
                     import traceback
                     traceback.print_exc()
                     raise
-                finally:
-                    import os
-                    for temp_path in temp_paths:
-                        if os.path.exists(temp_path):
-                            try:
-                                os.remove(temp_path)
-                            except Exception as e:
-                                logger.warning(f"Failed to remove temp file {temp_path}: {e}")
 
         if diarize and diarize_strategy == "seg_clustering":
             try:
