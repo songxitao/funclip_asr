@@ -293,7 +293,7 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             
         yield f"📂 [文件夹模式] 开启！字幕将统一归档至: {final_out_dir}", "准备中", None
 
-    # 热词提示（SeACo 模式支持；SenseVoice/Nano 暂不支持）
+    # 热词提示（仅 SeACo 模式支持）
     if hotwords_str and hotwords_str.strip() and funasr_mode != "SeACo":
         yield "⚠️ 提示：热词功能仅在 SeACo 模式下生效。当前模式将忽略热词。", "准备中", None
 
@@ -332,8 +332,8 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             if engine == "FunASR":
                 if funasr_mode == "SeACo":
                     effective_engine = "seaco"
-                elif funasr_mode in ("SenseVoice", "Nano"):
-                    effective_engine = "auto"   # SenseVoice 走 auto-route；Nano 待接入暂用 auto 兜底
+                else:
+                    effective_engine = "auto"  # SenseVoice 走 auto-route
 
             # 调用 pipeline（透传引擎、语言参数、热词）
             result = pipeline.run(
@@ -710,7 +710,7 @@ with gr.Blocks(title="SuperASR Final Fixed", theme=gr.themes.Soft()) as app:
                     chk_folder_mode = gr.Checkbox(label="📂 文件夹归档模式", value=False, info="扁平输出：不创建子文件夹")
                     with gr.Row():
                         engine = gr.Radio(["FunASR", "Qwen3 (Docker)"], label="引擎", value="FunASR")
-                        funasr_mode = gr.Radio(["SeACo", "SenseVoice", "Nano"], label="FunASR模式", value="SeACo")
+                        funasr_mode = gr.Radio(["SeACo", "SenseVoice"], label="FunASR模式", value="SeACo")
 
                     # --- Qwen3 面板 ---
                     qwen_grp = gr.Group(visible=False)

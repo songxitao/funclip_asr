@@ -39,6 +39,12 @@ markers = [
 ]
 addopts = "-m 'not slow' -q --tb=short --ignore=tests/archive"
 
+[tool.ruff]
+exclude = [".git", "__pycache__", "build", "dist"]
+
+[tool.ruff.lint]
+per-file-ignores = {"tests/**" = ["E402"]}
+
 [project.urls]
 Homepage = "https://github.com/"
 Repository = "https://github.com/"
