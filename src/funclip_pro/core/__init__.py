@@ -48,6 +48,7 @@ __all__ = [
     "SherpaSenseVoice",
     "QwenEngine",
     "parse_qwen_timestamps",
+    "_split_timestamps_to_segments",
     "load_models",
     "CharTokenizer",
     "_assign_clauses_to_speakers",

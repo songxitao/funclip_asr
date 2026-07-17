@@ -25,11 +25,9 @@ import re
 import sys
 import threading
 import time
-from typing import List, Optional, Union
+from typing import List, Union
 
 import numpy as np
-import io
-import soundfile as sf
 
 # 路径解耦：统一由 config.loader 解析模型目录，零硬编码盘符/绝对路径。
 from funclip_pro.config.loader import resolve_model_path
@@ -192,7 +190,7 @@ class SenseVoiceSmall(_resolve_sensevoice_onnx_base()):
             # 向量化批量解码，替换逐句循环，消除 CPU-GIL 延迟
             token_ids = np.argmax(ctc_logits, axis=-1)  # [B, T]
 
-            encoder_lens_np = np.array([l.item() if hasattr(l, 'item') else l for l in encoder_out_lens])
+            encoder_lens_np = np.array([v.item() if hasattr(v, 'item') else v for v in encoder_out_lens])
             max_time = token_ids.shape[1]
             time_indices = np.arange(max_time)[None, :]
             valid_mask = time_indices < encoder_lens_np[:, None]
@@ -488,7 +486,6 @@ def load_models():
     _apply_dll_patch_once()
     from funasr import AutoModel  # type: ignore
 
-    model_path = str(resolve_model_path("models/iic/SenseVoiceSmall-ONNX"))
     vad_path = str(resolve_model_path("models/damo/speech_fsmn_vad_zh-cn-16k-common-pytorch"))
     punc_path = str(resolve_model_path("models/damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"))
 
@@ -845,8 +842,10 @@ class QwenEngine:
             except Exception as e:
                 self.logger.warning("[QwenEngine] 共享卷模式激活失败，降级为 Base64 传输: %s", e)
                 for p in copied_host_paths:
-                    try: os.remove(p)
-                    except: pass
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
                 copied_host_paths = []
                 docker_paths = []
                 use_shared = False
@@ -901,8 +900,10 @@ class QwenEngine:
         finally:
             for p in copied_host_paths:
                 if os.path.exists(p):
-                    try: os.remove(p)
-                    except: pass
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
 
     def transcribe(self, audio_path: str, language: str = "auto", **kwargs) -> dict:
         """转写音频文件，返回完整结果。
@@ -1013,7 +1014,6 @@ def _split_timestamps_to_segments(timestamps: list, full_text: str, offset_ms: i
         else:
             # 从 char_map 反查 full_text 中的位置
             mapped_starts = [c[1] for c in char_map if c[0] == pos]
-            mapped_ends = [c[1] for c in char_map if c[0] == pos + len(token_text) - 1]
             char_start = mapped_starts[0] if mapped_starts else pos
             last_clean_pos = pos + len(token_text) - 1
             mapped_end_last = [c[1] for c in char_map if c[0] == last_clean_pos]
@@ -1038,7 +1038,6 @@ def _split_timestamps_to_segments(timestamps: list, full_text: str, offset_ms: i
     cur_tokens = [char_ts[0]]
     for j in range(1, len(char_ts)):
         item = char_ts[j]
-        gap = item["start"] - cur_tokens[-1]["end"]
         # 1) 检查 token 自身末字符是否为标点（Qwen 可能把标点作为独立 token）
         last_text = cur_tokens[-1]["text"]
         has_punc_token = bool(last_text and last_text[-1] in ".?!。？！，,、")

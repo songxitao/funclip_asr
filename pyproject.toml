@@ -44,6 +44,9 @@ exclude = [".git", "__pycache__", "build", "dist"]
 
 [tool.ruff.lint]
 per-file-ignores = {"tests/**" = ["E402"]}
+ignore = [
+    "E402",  # Import not at top — by design (DLL patch before imports)
+]
 
 [project.urls]
 Homepage = "https://github.com/"

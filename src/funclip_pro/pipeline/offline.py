@@ -28,24 +28,17 @@ apply_dll_patch()
 from funclip_pro.core import (
     SegmentationEngine,
     CampPlusSpeaker,
-    SenseVoiceSmall,
-    PyTorchSenseVoice,
-    SherpaSenseVoice,
     load_models,
-    _assign_clauses_to_speakers,
     _assign_clauses_to_speakers_seamless,
     WordTimestamp,
     Segment,
     TranscriptionResult,
 )
-from funclip_pro.core.asr import _split_timestamps_to_segments
 # VAD 模型以模块级全局句柄持有（load_models 填充）；原 _run_inference 直接引用
 # 模块全局 VAD_MODEL，这里通过 asr 子模块句柄等价引用，保证调用期读取最新值。
 from funclip_pro.core import asr as asr_mod
 from funclip_pro.utils import (
-    _ms_to_srt,
     _merge_same_speaker_segments,
-    _segments_to_srt,
 )
 
 logger = logging.getLogger("OfflinePipeline")
@@ -175,7 +168,7 @@ class OfflinePipeline:
 
         # 🔥 Qwen3 (Docker) 引擎专用分支：直接调用 Docker API，支持 VAD 和批量处理
         if engine_key == "qwen":
-            from funclip_pro.core.asr import QwenEngine, parse_qwen_timestamps
+            from funclip_pro.core.asr import QwenEngine
 
             qwen_engine = QwenEngine()
             lang_param = language[0] if isinstance(language, list) else (language or "auto")

@@ -21,6 +21,7 @@ def _format_ass_time(ms):
     s = total_s % 60
     total_m = total_s // 60
     h = total_m // 60
+    m = total_m % 60
     return f"{h}:{m:02}:{s:02}.{cs:02}"
 
 
