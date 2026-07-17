@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-07-17
+
+### Added
+- `benchmark_qwen_asr.py` 后端性能基准与吞吐量对比测试脚本
+- 宿主机端 `run_bench.bat` 一键基准测试启动脚本
+
+### Fixed
+- 修复并解决了 Qwen3-ASR 在集成客户端中失效/假死的问题
+
+### Changed
+- 在宿主机 SDK 离线流水线（`OfflinePipeline`）中引入并集成了 VAD 音频自动切割机制，将长音频分割为小段以匹配 ASR 模型最大长度。
+- 重构客户端 `QwenEngine.transcribe_batch` 引入宿主机与 Docker 容器间共享临时卷直读（Direct Path）传输机制，免去 Base64 传输与编解码开销，大幅节省大批量切片文件传输耗时。
+- 微调容器内 vLLM 核心参数：将 `MAX_MODEL_LEN` 提升至 `4096` 解决长音频 Token 溢出报错；调优 `GPU_MEMORY_UTILIZATION=0.70` 并限制并发 `max_num_seqs=8`，留出 `2.4GB` 物理显存边界，彻底解决跨 PCIe 显存 Swap 导致的假死利用率。
+- 收紧 Docker 创建容器参数，限制 `--cpus 8` 与 `--shm-size 2g`，解决 150 线程上下文切换引起的 CPU 锯齿过载。
+
 ## [0.8.0] - 2026-07-15
 
 ### Added

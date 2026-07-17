@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import threading
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -528,6 +529,146 @@ class QwenEngine:
         result = self.transcribe(audio_path)
         return result["text"]
 
+    def transcribe_batch(self, audio_paths: List[str], language: str = "auto") -> List[dict]:
+        """批量转写音频文件。
+
+        Args:
+            audio_paths: 音频文件路径列表。
+            language: 转写语言。
+
+        Returns:
+            List[dict]: 每一个元素的格式为：
+                {"text": str, "timestamps": [{"text": str, "start": float, "end": float}, ...]}
+        """
+        # 语言规范化映射
+        _QWEN3_LANG_MAP = {
+            "zh": "Chinese",
+            "en": "English",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "yue": "Cantonese",
+            "ar": "Arabic",
+            "de": "German",
+            "fr": "French",
+            "es": "Spanish",
+            "pt": "Portuguese",
+            "id": "Indonesian",
+            "it": "Italian",
+            "ru": "Russian",
+            "th": "Thai",
+            "vi": "Vietnamese",
+            "tr": "Turkish",
+            "hi": "Hindi",
+            "ms": "Malay",
+            "nl": "Dutch",
+            "sv": "Swedish",
+            "da": "Danish",
+            "fi": "Finnish",
+            "pl": "Polish",
+            "cs": "Czech",
+            "fil": "Filipino",
+            "fa": "Persian",
+            "el": "Greek",
+            "hu": "Hungarian",
+            "mk": "Macedonian",
+            "ro": "Romanian",
+            "auto": None,
+        }
+        lang_key = str(language[0] if isinstance(language, list) else language).lower() if language else "auto"
+        api_lang = _QWEN3_LANG_MAP.get(lang_key, language)
+
+        import base64
+        import requests
+        import shutil
+        import uuid
+
+        use_shared = False
+        docker_paths = []
+        copied_host_paths = []
+
+        if self.shared_host_dir:
+            try:
+                os.makedirs(self.shared_host_dir, exist_ok=True)
+                for path in audio_paths:
+                    abs_path = os.path.abspath(path)
+                    abs_shared = os.path.abspath(self.shared_host_dir)
+                    rel = os.path.relpath(abs_path, abs_shared)
+                    if not rel.startswith("..") and not os.path.isabs(rel):
+                        # 已经在共享目录下
+                        d_path = os.path.join(self.shared_docker_dir, rel).replace("\\", "/")
+                        docker_paths.append(d_path)
+                    else:
+                        ext = os.path.splitext(path)[1]
+                        filename = f"batch_{uuid.uuid4()}{ext}"
+                        dest = os.path.join(self.shared_host_dir, filename)
+                        shutil.copy2(path, dest)
+                        copied_host_paths.append(dest)
+                        d_path = os.path.join(self.shared_docker_dir, filename).replace("\\", "/")
+                        docker_paths.append(d_path)
+                use_shared = True
+                self.logger.info("[QwenEngine] 成功激活 Docker 共享卷直读模式，直读 %d 个切片文件", len(audio_paths))
+            except Exception as e:
+                self.logger.warning("[QwenEngine] 共享卷模式激活失败，降级为 Base64 传输: %s", e)
+                for p in copied_host_paths:
+                    try: os.remove(p)
+                    except: pass
+                copied_host_paths = []
+                docker_paths = []
+                use_shared = False
+
+        if use_shared:
+            payload = {
+                "language": api_lang,
+                "return_timestamps": True,
+                "audio_paths": docker_paths,
+            }
+        else:
+            b64_list = []
+            for path in audio_paths:
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                b64_list.append(b64)
+            payload = {
+                "language": api_lang,
+                "return_timestamps": True,
+                "audio_batch_base64": b64_list,
+            }
+
+        try:
+            res = requests.post(
+                f"{self.host}/v1/audio/batch_transcriptions",
+                json=payload,
+                timeout=(5.0, 90.0),
+            )
+            if res.status_code != 200:
+                raise RuntimeError(f"API Error {res.status_code}: {res.text}")
+
+            data = res.json()
+            if isinstance(data, dict) and "results" in data:
+                results = data["results"]
+            elif isinstance(data, list):
+                results = data
+            else:
+                results = [data]
+            return results
+        except requests.exceptions.ConnectTimeout as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务连接超时(5s)，请确认服务是否已启动: %s", e)
+            raise RuntimeError("Docker ASR 服务连接超时，请检查服务状态") from e
+        except requests.exceptions.ReadTimeout as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务响应超时(90s)，请确认服务是否正常: %s", e)
+            raise RuntimeError("Docker ASR 服务响应超时，请检查服务状态") from e
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error("[QwenEngine] Docker ASR 服务无法连接，请确认服务是否已启动: %s", e)
+            raise RuntimeError("Docker ASR 服务无法连接，请检查服务状态") from e
+        except Exception as e:
+            self.logger.error("[QwenEngine] 请求失败: %s", e)
+            raise RuntimeError(f"QwenEngine ASR 请求异常: {e}") from e
+        finally:
+            for p in copied_host_paths:
+                if os.path.exists(p):
+                    try: os.remove(p)
+                    except: pass
+
     def transcribe(self, audio_path: str, language: str = "auto", **kwargs) -> dict:
         """转写音频文件，返回完整结果。
 
@@ -537,85 +678,25 @@ class QwenEngine:
         self.logger.info("[QwenEngine] 开始处理: %s", os.path.basename(audio_path))
         t_start = time.time()
 
-        # 1. 尝试使用 Shared Volume 优化（减少大文件网络传输）
-        file_name = os.path.basename(audio_path)
-        use_shared = False
-        shared_path = None
-        docker_path = None
+        results = self.transcribe_batch([audio_path], language=language)
+        if not results:
+            raise RuntimeError("QwenEngine ASR return empty results")
 
-        if self.shared_host_dir and os.path.isdir(os.path.dirname(self.shared_host_dir)):
-            try:
-                os.makedirs(self.shared_host_dir, exist_ok=True)
-                shared_path = os.path.join(self.shared_host_dir, file_name)
-                import shutil
-                shutil.copy(audio_path, shared_path)
-                docker_path = f"{self.shared_docker_dir}/{file_name}"
-                use_shared = True
-                self.logger.info("[QwenEngine] 已启用共享存储卷模式")
-            except Exception as e:
-                self.logger.warning("[QwenEngine] 无法使用共享目录: %s, 将使用 Base64 模式", e)
+        result_item = results[0]
+        text = result_item.get("text", "")
+        timestamps = result_item.get("timestamps", [])
 
-        # 2. 构造请求
-        payload = {
-            "language": language,
-            "return_timestamps": True,
+        dur = time.time() - t_start
+        self.logger.info("[QwenEngine] 处理完成! 耗时: %.2fs", dur)
+
+        # 生成 SRT
+        srt_content = self._build_srt(timestamps, text)
+
+        return {
+            "text": text,
+            "srt": srt_content,
+            "raw": result_item,
         }
-        if use_shared:
-            payload["audio_paths"] = [docker_path]
-        else:
-            import base64
-            with open(audio_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            payload["audio_data"] = [b64]
-
-        # 3. 发送请求
-        import requests
-        try:
-            res = requests.post(
-                f"{self.host}/v1/audio/batch_transcriptions",
-                json=payload,
-                timeout=(2.0, 15.0),
-            )
-            if res.status_code != 200:
-                raise RuntimeError(f"API Error {res.status_code}: {res.text}")
-
-            data = res.json()
-            # Batch API returns a list of results
-            result_item = data[0] if isinstance(data, list) and len(data) > 0 else data
-
-            text = result_item.get("text", "")
-            timestamps = result_item.get("timestamps", [])
-
-            dur = time.time() - t_start
-            self.logger.info("[QwenEngine] 处理完成! 耗时: %.2fs", dur)
-
-            # 4. 生成 SRT
-            srt_content = self._build_srt(timestamps, text)
-
-            return {
-                "text": text,
-                "srt": srt_content,
-                "raw": result_item,
-            }
-        except requests.exceptions.ConnectTimeout as e:
-            self.logger.error("[QwenEngine] Docker ASR 服务连接超时(2s)，请确认服务是否已启动: %s", e)
-            raise RuntimeError("Docker ASR 服务连接超时，请检查服务状态") from e
-        except requests.exceptions.ReadTimeout as e:
-            self.logger.error("[QwenEngine] Docker ASR 服务响应超时(15s)，请确认服务是否正常: %s", e)
-            raise RuntimeError("Docker ASR 服务响应超时，请检查服务状态") from e
-        except requests.exceptions.ConnectionError as e:
-            self.logger.error("[QwenEngine] Docker ASR 服务无法连接，请确认服务是否已启动: %s", e)
-            raise RuntimeError("Docker ASR 服务无法连接，请检查服务状态") from e
-        except Exception as e:
-            self.logger.error("[QwenEngine] 请求失败: %s", e)
-            raise RuntimeError(f"QwenEngine ASR 请求异常: {e}") from e
-        finally:
-            # 清理共享文件
-            if use_shared and shared_path and os.path.exists(shared_path):
-                try:
-                    os.remove(shared_path)
-                except Exception:
-                    pass
 
     def _build_srt(self, timestamps: list, full_text: str) -> str:
         """根据时间戳列表生成 SRT 字幕内容。"""

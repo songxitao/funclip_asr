@@ -152,15 +152,113 @@ class OfflinePipeline:
 
         engine_key = asr_mod._select_engine(engine, duration_ms)
 
-        # 🔥 Qwen3 (Docker) 引擎专用分支：直接调用 Docker API，跳过本地 VAD/解码
+        # 🔥 Qwen3 (Docker) 引擎专用分支：直接调用 Docker API，支持 VAD 和批量处理
         if engine_key == "qwen":
             from funclip_pro.core.asr import QwenEngine, parse_qwen_timestamps
 
             qwen_engine = QwenEngine()
-            result = qwen_engine.transcribe(audio_path, language=language[0] if isinstance(language, list) else (language or "auto"))
-            text = result["text"]
-            segments = parse_qwen_timestamps(result.get("raw", {}))
-            return text, "qwen", segments or [], ""
+            lang_param = language[0] if isinstance(language, list) else (language or "auto")
+            
+            use_vad = asr_mod._use_vad(vad_strategy, duration_ms)
+            
+            if not use_vad:
+                result = qwen_engine.transcribe(audio_path, language=lang_param)
+                text = result["text"]
+                raw_segs = parse_qwen_timestamps(result.get("raw", {}))
+                segments = []
+                for seg in raw_segs:
+                    segments.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "speaker": "0",
+                        "text": seg["text"]
+                    })
+                return text, "qwen", segments, ""
+            
+            else:
+                # 运行 VAD 分割过滤静音段
+                vad_model = asr_mod.VAD_MODEL
+                vad_out = vad_model.generate(
+                    input=audio_path,
+                    batch_size_s=_VAD_BATCH_SIZE_S,
+                    max_single_segment_time=_VAD_MAX_SINGLE_SEGMENT_TIME,
+                )
+                raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
+                opt_segs = asr_mod._merge_vad_segments(raw_segs)
+                
+                if not opt_segs:
+                    return ("", "qwen", [], "")
+                
+                temp_paths = []
+                try:
+                    import tempfile
+                    import soundfile as sf
+                    import os
+                    import sys
+                    
+                    print(f"[DEBUG SF WRITE] sf module id: {id(sf)}, soundfile in sys.modules id: {id(sys.modules['soundfile'])}, sf.write is: {sf.write}")
+                    for i, (start_ms, end_ms) in enumerate(opt_segs):
+                        s_idx = int(start_ms * 16)
+                        e_idx = int(end_ms * 16)
+                        chunk = y[s_idx:e_idx]
+                        
+                        fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix=f"qwen_chunk_{i}_")
+                        os.close(fd)
+                        temp_paths.append(temp_path)
+                        
+                        sf.write(temp_path, chunk, 16000)
+                    
+                    batch_results = qwen_engine.transcribe_batch(temp_paths, language=lang_param)
+                    
+                    segments = []
+                    texts = []
+                    for i, result_item in enumerate(batch_results):
+                        if i >= len(opt_segs):
+                            break
+                        offset_ms = opt_segs[i][0]
+                        seg_text = result_item.get("text", "")
+                        texts.append(seg_text)
+                        
+                        for ts in result_item.get("timestamps", []):
+                            start_sec = ts.get("start", 0.0)
+                            end_sec = ts.get("end", 0.0)
+                            text_char = ts.get("text", "")
+                            
+                            segments.append({
+                                "start": int(start_sec * 1000) + offset_ms,
+                                "end": int(end_sec * 1000) + offset_ms,
+                                "speaker": "0",
+                                "text": text_char
+                            })
+                    
+                    # 拼接整体 text (智能拼接，避免多余空格)
+                    full_text = ""
+                    for t in texts:
+                        if not t:
+                            continue
+                        if full_text:
+                            # 智能拼接空格
+                            if full_text[-1].isalnum() and t[0].isalnum():
+                                full_text += " " + t
+                            else:
+                                full_text += t
+                        else:
+                            full_text = t
+                            
+                    return full_text, "qwen", segments, ""
+                except Exception as e:
+                    print(f"[DEBUG] EXCEPTION in Qwen block: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                finally:
+                    import os
+                    for temp_path in temp_paths:
+                        if os.path.exists(temp_path):
+                            try:
+                                os.remove(temp_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to remove temp file {temp_path}: {e}")
 
         if diarize and diarize_strategy == "seg_clustering":
             try:

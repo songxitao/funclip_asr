@@ -1,9 +1,15 @@
+import os
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import List, Optional, Union, Dict, Any
 import torch
-import os
 import base64
 import numpy as np
 import io
@@ -22,8 +28,8 @@ asr_model = None
 # Configuration
 ASR_MODEL_PATH = "/data/shared/Qwen3-ASR-1.7B"
 ALIGNER_MODEL_PATH = "/data/shared/Qwen3-ForcedAligner-0.6B"
-GPU_MEMORY_UTILIZATION = 0.8
-MAX_MODEL_LEN = 2048  # 🔥 配合前端 20s/150字 重置阈值，2048 足够
+GPU_MEMORY_UTILIZATION = 0.70  # ⬇️ 降至 0.70 给 ForcedAligner 留出显存红线，防止显存 Swap 挂起
+MAX_MODEL_LEN = 4096  # ⬆️ 提升以支持长 VAD 分段的音频多模态 tokens
 
 class AudioRequest(BaseModel):
     audio_base64: str
@@ -85,13 +91,13 @@ def load_model():
             },
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LEN,
-            max_num_seqs=32,               # 限制并发序列数，释放管理显存
-            max_inference_batch_size=32,    # 提升单次并行计算量，匹配前端并发
+            max_num_seqs=8,               # ⬇️ 调整至 8 配合 4096 model_len 防止 12GB 显卡 OOM
+            max_inference_batch_size=8,   # ⬇️ 配合 max_num_seqs
             max_new_tokens=512,            # 🔥 修复丢字幕：32太小，长片段会被截断
-            kv_cache_dtype="fp8",
-            # 🔥 满血性能参数
+            kv_cache_dtype="fp8",          # RTX 4080 Ada 原生 FP8，KV 占用减半
             enable_prefix_caching=True,    # 开启前缀缓存，消灭重叠计算
-            enable_chunked_prefill=True    # 开启分块预填，防止心跳超时
+            enable_chunked_prefill=False,  # ❌ 离线高吞吐场景关闭分块预填，减少调度碎裂开销
+            swap_space=0,                  # 🔥 禁止 CPU swap 预分配，节省宿主 RAM
         )
         print("✅ Model Loaded Successfully!")
     except Exception as e:
@@ -300,15 +306,22 @@ async def transcribe_batch(req: BatchAudioRequest):
              raise HTTPException(status_code=400, detail="No valid audio files to process")
 
         try:
-            # 2. Batch Inference
-            # vLLM handles the parallelism internally
+            # 2. Batch Inference (with Micro-batching to prevent OOM and Swap lag)
             print(f"🚀 Running Batch Inference on {len(temp_files)} files...")
-            print(f"🔍 [Server Debug] Processing with language='{req.language}'") # 🔥 Debug Log
-            results = asr_model.transcribe(
-                audio=temp_files,
-                language=req.language,
-                return_time_stamps=req.return_timestamps
-            )
+            input_lang = str(req.language).lower() if req.language else "auto"
+            qwen_lang = QWEN3_LANG_MAP.get(input_lang, req.language)
+            print(f"🔍 [Server Debug] Processing with language='{qwen_lang}'") # 🔥 Debug Log
+            
+            results = []
+            micro_batch_size = 64  # ⬆️ 进一步扩大微批次，减少 CPU 准备数据导致的 GPU 空转
+            for start_idx in range(0, len(temp_files), micro_batch_size):
+                chunk_batch = temp_files[start_idx : start_idx + micro_batch_size]
+                batch_results = asr_model.transcribe(
+                    audio=chunk_batch,
+                    language=qwen_lang,
+                    return_time_stamps=req.return_timestamps
+                )
+                results.extend(batch_results)
             
             # 3. Format Response
             response_list = []

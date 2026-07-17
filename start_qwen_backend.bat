@@ -21,7 +21,8 @@ docker run -d ^
   --name qwen3-asr ^
   --gpus all ^
   -p 28000:80 ^
-  --shm-size 10g ^
+  --shm-size 2g ^
+  --cpus 8 ^
   -v "%~dp0model\models\Qwen:/data/shared" ^
   -v "%~dp0qwen_server:/app/server" ^
   qwenllm/qwen3-asr:latest ^
