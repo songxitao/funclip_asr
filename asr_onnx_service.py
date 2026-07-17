@@ -44,6 +44,12 @@ from funclip_pro.pipeline import OfflinePipeline
 # SRT 响应组装复用 funclip_pro.utils 工具（等价于原 _segments_to_srt / _merge_same_speaker_segments）
 from funclip_pro.utils import _segments_to_srt, _merge_same_speaker_segments
 
+# 请求/响应模型（与 core/models.py 保持一致风格，避免引入 pydantic 依赖）
+from dataclasses import dataclass
+
+# 健康检查
+import requests
+
 # 设置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ASRService")
@@ -62,6 +68,55 @@ app.add_middleware(
 PIPELINE = None
 GPU_SEMAPHORE = asyncio.Semaphore(3)  # 并发限制，防范 CUDA OOM
 MAX_FILE_SIZE = 50 * 1024 * 1024      # 50MB 内存防线
+
+
+# ------------------------------------------------------------------
+# 请求/响应模型（dataclass，与 core/models.py 风格一致）
+# ------------------------------------------------------------------
+
+@dataclass
+class TranscriptionRequest:
+    """转录请求参数说明模型。
+
+    用于 API 文档 / OpenAPI schema 参考；实际端点仍使用 FastAPI Form 参数
+    （因含文件上传，必须保持 multipart/form-data）。
+    """
+    engine: str = "auto"            # "auto" | "seaco" | "qwen" | "sensevoice"
+    language: str = "auto"
+    diarize: bool = False
+    hotwords: str = ""
+    vad_strategy: str = "auto"      # "auto" | "always" | "never"
+
+
+def result_to_dict(r) -> dict:
+    """将 TranscriptionResult dataclass 序列化为纯 dict。
+
+    覆盖 FastAPI 不认识 dataclass 的问题，同时保证词级时间戳完整展开。
+    """
+    return {
+        "text": r.text,
+        "engine": r.engine,
+        "language": r.language,
+        "duration_ms": r.duration_ms,
+        "segments": [
+            {
+                "start": s.start_ms,
+                "end": s.end_ms,
+                "text": s.text,
+                "speaker": s.speaker,
+                "words": [
+                    {
+                        "text": w.text,
+                        "start_ms": w.start_ms,
+                        "end_ms": w.end_ms,
+                        "confidence": w.confidence,
+                    }
+                    for w in s.words
+                ]
+            }
+            for s in r.segments
+        ],
+    }
 
 
 @app.on_event("startup")
@@ -116,9 +171,9 @@ async def transcribe(
             raise HTTPException(status_code=413, detail="文件内容超过 50MB 限制")
 
         # 4. 并发限制控制与推理（委托 OfflinePipeline，等价原 _run_inference）
-        #    返回四元组 (raw_text, engine_key, segments, diarized_text)
+        #    返回 TranscriptionResult（含 text, engine, segments, diarized_text）
         async with GPU_SEMAPHORE:
-            text, engine_key, segments, diarized_text = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 PIPELINE.run,
                 temp_path,
                 vad_strategy=vad_strategy,
@@ -129,24 +184,33 @@ async def transcribe(
             )
 
         latency = (time.time() - start_time) * 1000
-        logger.info(f"音频转写完成 (vad_strategy={vad_strategy}, engine={engine_key}, diarize={diarize})，耗时: {latency:.2f} ms")
+        logger.info(f"音频转写完成 (vad_strategy={vad_strategy}, engine={result.engine}, diarize={diarize})，耗时: {latency:.2f} ms")
 
         if response_format == "text":
-            return PlainTextResponse(diarized_text if diarize and diarized_text else text)
+            return PlainTextResponse(result.diarized_text if diarize and result.diarized_text else result.text)
 
         if response_format == "srt":
-            if diarize and segments:
-                merged = _merge_same_speaker_segments(segments)
+            if diarize and result.segments:
+                merged = _merge_same_speaker_segments(result.segments)
                 srt_text = _segments_to_srt(merged)
             else:
                 # 非说话人分离模式：整段文字作为一条字幕（无时间戳信息）
-                srt_text = f"1\n00:00:00,000 --> 00:00:00,000\n{text.strip()}\n" if text.strip() else ""
+                srt_text = f"1\n00:00:00,000 --> 00:00:00,000\n{result.text.strip()}\n" if result.text.strip() else ""
             return PlainTextResponse(srt_text)
 
         # 默认 json 响应：字段与原服务完全一致（等价优先）
-        resp = {"text": text, "latency_ms": latency, "engine": engine_key, "segments": segments}
+        # Segment dataclass → dict 序列化
+        seg_dicts = []
+        for s in result.segments:
+            seg_dicts.append({
+                "start": s.start_ms,
+                "end": s.end_ms,
+                "text": s.text,
+                "speaker": s.speaker,
+            })
+        resp = {"text": result.text, "latency_ms": latency, "engine": result.engine, "segments": seg_dicts}
         if diarize:
-            resp["diarized_text"] = diarized_text
+            resp["diarized_text"] = result.diarized_text
         return resp
 
     except HTTPException as he:
@@ -157,6 +221,110 @@ async def transcribe(
 
     finally:
         # 5. 可靠的垃圾文件清理与异步化
+        if temp_path and os.path.exists(temp_path):
+            try:
+                await asyncio.to_thread(os.remove, temp_path)
+            except Exception as e:
+                logger.error(f"清理临时文件失败 {temp_path}: {e}")
+
+
+# ------------------------------------------------------------------
+# 标准化 API 端点（v1）
+# ------------------------------------------------------------------
+
+@app.get("/v1/health")
+async def health_check():
+    """检查各引擎健康状态。
+
+    - Qwen：尝试 HTTP GET Docker 服务（从 config.json 读取 host）
+    - 其他引擎标记为 "lazy"（惰性加载，未调用前不确定）
+    """
+    engines = {}
+
+    # Qwen：尝试连接 Docker 服务
+    try:
+        from funclip_pro.config.loader import load_config
+        _cfg = load_config()
+        qwen_host = _cfg.get("qwen_server", {}).get("host", "http://127.0.0.1:28000")
+        qwen_host = qwen_host.rstrip("/")
+        resp = requests.get(f"{qwen_host}/", timeout=3)
+        engines["qwen"] = "ready" if resp.status_code < 500 else "unavailable"
+    except Exception:
+        engines["qwen"] = "unavailable"
+
+    # 其他引擎惰性加载
+    engines["seaco"] = "lazy"
+    engines["sensevoice"] = "lazy"
+    engines["sherpa"] = "lazy"
+    engines["torch"] = "lazy"
+
+    return {"status": "ok", "engines": engines}
+
+
+@app.post("/v1/transcribe")
+async def transcribe_v1(
+    request: Request,
+    file: UploadFile = File(...),
+    engine: str = Form("auto"),
+    language: str = Form("auto"),
+    diarize: bool = Form(False),
+    hotwords: str = Form(""),
+    vad_strategy: str = Form("auto"),
+):
+    """标准转写端点。
+
+    返回完整的 TranscriptionResult JSON，含词级时间戳（words）。
+    与旧 `/transcribe` 端点的区别：响应格式固定为 JSON，不含 latency_ms 等元信息。
+    """
+    if PIPELINE is None:
+        raise HTTPException(status_code=503, detail="模型未初始化完毕")
+
+    # 1. 安全校验
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="上传文件过大，限制 50MB 以内")
+
+    start_time = time.time()
+    suffix = os.path.splitext(file.filename)[1] or ".wav"
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_path = temp_file.name
+            content = await file.read()
+            await asyncio.to_thread(temp_file.write, content)
+
+        if os.path.getsize(temp_path) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="文件内容超过 50MB 限制")
+
+        # 2. 推理
+        async with GPU_SEMAPHORE:
+            result = await asyncio.to_thread(
+                PIPELINE.run,
+                temp_path,
+                vad_strategy=vad_strategy,
+                diarize=diarize,
+                engine=engine if engine != "auto" else None,
+                language=[language] if language and language != "auto" else None,
+                hotwords=hotwords,
+            )
+
+        latency = (time.time() - start_time) * 1000
+        logger.info(
+            f"[v1] 音频转写完成 (engine={result.engine}, vad={vad_strategy}, "
+            f"diarize={diarize})，耗时: {latency:.2f} ms"
+        )
+
+        # 3. 返回完整的 TranscriptionResult JSON
+        return result_to_dict(result)
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"[v1] 语音识别服务内部出错: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="语音识别出错，请联系管理员")
+
+    finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 await asyncio.to_thread(os.remove, temp_path)

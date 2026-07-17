@@ -298,9 +298,9 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
         yield "❌ 错误：Whisper 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
         return
 
-    # 若输入有 hotwords_str，给予友好提示（OfflinePipeline 暂不支持热词）
-    if hotwords_str and hotwords_str.strip():
-        yield "⚠️ 提示：热词功能暂未被包化重构的 OfflinePipeline 支持，转写时将忽略热词。", "准备中", None
+    # 热词提示（SeACo 模式支持；SenseVoice/Nano 暂不支持）
+    if hotwords_str and hotwords_str.strip() and funasr_mode != "SeACo":
+        yield "⚠️ 提示：热词功能仅在 SeACo 模式下生效。当前模式将忽略热词。", "准备中", None
 
     yield f"🚀 启动引擎... (共 {len(final_tasks)} 个文件)", "启动中", None
 
@@ -332,12 +332,21 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             
             yield f"⏳ 正在处理第 {idx+1}/{len(final_tasks)} 个文件: {p.name}...", f"运行中 ({idx+1}/{len(final_tasks)})", None
             
-            # 调用 pipeline（透传引擎和语言参数）
-            raw_text, engine_key, segments, diarized_text = pipeline.run(
+            # 🔥 FunASR 子模式 → engine key 映射
+            effective_engine = engine
+            if engine == "FunASR":
+                if funasr_mode == "SeACo":
+                    effective_engine = "seaco"
+                elif funasr_mode in ("SenseVoice", "Nano"):
+                    effective_engine = "auto"   # SenseVoice 走 auto-route；Nano 待接入暂用 auto 兜底
+
+            # 调用 pipeline（透传引擎、语言参数、热词）
+            result = pipeline.run(
                 audio_path=str(input_file),
                 diarize=spk_on,
-                engine=engine,
+                engine=effective_engine,
                 language=[lang_code],
+                hotwords=hotwords,
             )
             
             # 确定输出子目录
@@ -353,17 +362,17 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             ass_path = file_out_dir / f"{stem}.ass"
             
             # 写入文本文件
-            text_content = diarized_text if spk_on else raw_text
+            text_content = result.diarized_text if spk_on else result.text
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(text_content)
                 
             # 写入 SRT 字幕文件
-            srt_content = _segments_to_srt(segments)
+            srt_content = _segments_to_srt(result.segments)
             with open(srt_path, "w", encoding="utf-8") as f:
                 f.write(srt_content)
                 
             # 写入 ASS 字幕文件（VAD 级，无卡拉OK）
-            ass_content = _segments_to_ass(segments)
+            ass_content = _segments_to_ass(result.segments)
             with open(ass_path, "w", encoding="utf-8") as f:
                 f.write(ass_content)
                 
