@@ -306,6 +306,7 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
 
     try:
         from funclip_pro.utils import _segments_to_srt
+        from funclip_pro.utils.ass import _segments_to_ass
 
         # 语言映射
         _LANG_MAP = {
@@ -349,6 +350,7 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             
             txt_path = file_out_dir / f"{stem}.txt"
             srt_path = file_out_dir / f"{stem}.srt"
+            ass_path = file_out_dir / f"{stem}.ass"
             
             # 写入文本文件
             text_content = diarized_text if spk_on else raw_text
@@ -360,7 +362,13 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             with open(srt_path, "w", encoding="utf-8") as f:
                 f.write(srt_content)
                 
+            # 写入 ASS 字幕文件（VAD 级，无卡拉OK）
+            ass_content = _segments_to_ass(segments)
+            with open(ass_path, "w", encoding="utf-8") as f:
+                f.write(ass_content)
+                
             found_srts.append(str(srt_path.resolve()))
+            found_srts.append(str(ass_path.resolve()))
 
         if found_srts:
             path_list_str = "\n".join(found_srts)

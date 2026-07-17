@@ -1,1 +1,2 @@
 funclip_pro
+qwen_server

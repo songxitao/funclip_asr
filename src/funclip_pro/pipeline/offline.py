@@ -35,6 +35,7 @@ from funclip_pro.core import (
     _assign_clauses_to_speakers,
     _assign_clauses_to_speakers_seamless,
 )
+from funclip_pro.core.asr import _split_timestamps_to_segments
 # VAD 模型以模块级全局句柄持有（load_models 填充）；原 _run_inference 直接引用
 # 模块全局 VAD_MODEL，这里通过 asr 子模块句柄等价引用，保证调用期读取最新值。
 from funclip_pro.core import asr as asr_mod
@@ -154,7 +155,7 @@ class OfflinePipeline:
 
         # 🔥 Qwen3 (Docker) 引擎专用分支：直接调用 Docker API，支持 VAD 和批量处理
         if engine_key == "qwen":
-            from funclip_pro.core.asr import QwenEngine, parse_qwen_timestamps
+            from funclip_pro.core.asr import QwenEngine, parse_qwen_timestamps, _split_timestamps_to_segments
 
             qwen_engine = QwenEngine()
             lang_param = language[0] if isinstance(language, list) else (language or "auto")
@@ -164,14 +165,25 @@ class OfflinePipeline:
             if not use_vad:
                 result = qwen_engine.transcribe(audio_path, language=lang_param)
                 text = result["text"]
-                raw_segs = parse_qwen_timestamps(result.get("raw", {}))
+                raw_timestamps = result.get("raw", {}).get("timestamps", [])
+                # 使用智能分句将词级 timestamps 聚合成句级 segments
                 segments = []
-                for seg in raw_segs:
+                if raw_timestamps and text:
+                    segs = _split_timestamps_to_segments(raw_timestamps, text)
+                    for seg in segs:
+                        segments.append({
+                            "start": seg["start"],
+                            "end": seg["end"],
+                            "speaker": "0",
+                            "text": seg["text"]
+                        })
+                else:
+                    # 无时间戳时整段作为一句
                     segments.append({
-                        "start": seg["start"],
-                        "end": seg["end"],
+                        "start": 0,
+                        "end": int(duration_ms),
                         "speaker": "0",
-                        "text": seg["text"]
+                        "text": text
                     })
                 return text, "qwen", segments, ""
             
@@ -184,7 +196,7 @@ class OfflinePipeline:
                     max_single_segment_time=_VAD_MAX_SINGLE_SEGMENT_TIME,
                 )
                 raw_segs = vad_out[0]['value'] if vad_out and len(vad_out) > 0 and 'value' in vad_out[0] else [[0, duration_ms]]
-                opt_segs = asr_mod._merge_vad_segments(raw_segs)
+                opt_segs = asr_mod._merge_vad_segments(raw_segs, max_gap_ms=500, max_duration_ms=25000)
                 
                 if not opt_segs:
                     return ("", "qwen", [], "")
@@ -207,19 +219,34 @@ class OfflinePipeline:
                         seg_text = result_item.get("text", "")
                         texts.append(seg_text)
                         
+                        # 收集字级时间戳，并映射到原始文本 seg_text 的字符位置
+                        # 关键：Qwen 的标点可能仅在 seg_text 中而不在 timestamps 里，
+                        # 所以合并时需从 seg_text 切片才能保留标点。
+                        char_ts = []
+                        search_pos = 0
                         for ts in result_item.get("timestamps", []):
-                            start_sec = ts.get("start", 0.0)
-                            end_sec = ts.get("end", 0.0)
-                            text_char = ts.get("text", "")
-                            
-                            segments.append({
-                                "start": int(start_sec * 1000) + offset_ms,
-                                "end": int(end_sec * 1000) + offset_ms,
-                                "speaker": "0",
-                                "text": text_char
+                            token_text = ts.get("text", "")
+                            # 在 seg_text 中定位此 token
+                            pos = seg_text.find(token_text, search_pos)
+                            if pos < 0:
+                                pos = search_pos
+                            search_pos = pos + len(token_text)
+                            char_ts.append({
+                                "start": ts.get("start", 0.0),
+                                "end": ts.get("end", 0.0),
+                                "text": token_text,
+                                "char_start": pos,
+                                "char_end": search_pos
                             })
-                    
-                    # 拼接整体 text (智能拼接，避免多余空格)
+                        
+                        # 复用共享的智能分句函数（两阶段：原子短语 → 智能凑句）
+                        if char_ts:
+                            sub_segments = _split_timestamps_to_segments(
+                                result_item.get("timestamps", []),
+                                seg_text,
+                                offset_ms
+                            )
+                            segments.extend(sub_segments)
                     full_text = ""
                     for t in texts:
                         if not t:
@@ -232,7 +259,8 @@ class OfflinePipeline:
                                 full_text += t
                         else:
                             full_text = t
-                            
+                    
+                    # Qwen ITN 自带标点，不需 PUNC 模型再加工
                     return full_text, "qwen", segments, ""
                 except Exception as e:
                     print(f"[DEBUG] EXCEPTION in Qwen block: {e}")
@@ -325,6 +353,8 @@ class OfflinePipeline:
             # 廉价 trim 直解（防幻觉最低保障，不跑完整 VAD）
             y_trim, _ = asr_mod._cheap_trim(audio_path)
             waveforms = [y_trim]
+            chunks = []
+            seg_meta = []
         else:
             # 完整 FSMN VAD 切分
             vad_model = asr_mod.VAD_MODEL
@@ -422,5 +452,30 @@ class OfflinePipeline:
                 )
             except Exception as spk_err:
                 logger.error(f"说话人分离失败，退回无标注: {spk_err}", exc_info=True)
+
+        # 未开启说话人分离但有切分结果 → 构建无标注 segments 供 SRT/ASS 输出
+        if not segments and waveforms:
+            has_time_info = False
+            if use_vad and seg_meta:
+                has_time_info = True
+                for i, (start_ms, end_ms) in enumerate(seg_meta):
+                    seg_text = clean_texts[i] if i < len(clean_texts) else ""
+                    if seg_text.strip():
+                        segments.append({
+                            "start": start_ms,
+                            "end": end_ms,
+                            "speaker": "",
+                            "text": seg_text,
+                        })
+            if not has_time_info:
+                # 无切分时间信息（cheap_trim 路径）：每段 ASR 文本作为单独 segment
+                for i, seg_text in enumerate(clean_texts):
+                    if seg_text.strip():
+                        segments.append({
+                            "start": 0,
+                            "end": int(duration_ms),
+                            "speaker": "",
+                            "text": seg_text.strip(),
+                        })
 
         return (raw_text, engine_key, segments, diarized_text)

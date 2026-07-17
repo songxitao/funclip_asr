@@ -579,51 +579,73 @@ class QwenEngine:
         lang_key = str(language[0] if isinstance(language, list) else language).lower() if language else "auto"
         api_lang = _QWEN3_LANG_MAP.get(lang_key, language)
 
-        # --- In-memory batch path: numpy 数组输入，单次 Base64 批量 POST ---
+        # --- In-memory batch path: numpy 数组输入，并行 Base64 + 单次批量 POST ---
         if audio_paths and isinstance(audio_paths[0], np.ndarray):
             import base64
             import io
             import soundfile as sf
             import requests
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import os
 
-            b64_list = []
-            for chunk in audio_paths:
+            b64_list = [None] * len(audio_paths)
+
+            def _encode_one(idx, chunk):
                 buffer = io.BytesIO()
                 sf.write(buffer, np.asarray(chunk, dtype=np.float32), 16000,
                          format='WAV', subtype='PCM_16')
                 wav_bytes = buffer.getvalue()
                 buffer.close()
-                b64_list.append(base64.b64encode(wav_bytes).decode("utf-8"))
+                return idx, base64.b64encode(wav_bytes).decode("utf-8")
 
-            payload = {
-                "language": api_lang,
-                "return_timestamps": True,
-                "audio_batch_base64": b64_list,
-            }
+            with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
+                futures = [executor.submit(_encode_one, i, c) for i, c in enumerate(audio_paths)]
+                for f in as_completed(futures):
+                    idx, b64 = f.result()
+                    b64_list[idx] = b64
 
-            try:
-                res = requests.post(
-                    f"{self.host}/v1/audio/batch_transcriptions",
-                    json=payload,
-                    timeout=(5.0, 90.0),
-                )
-                if res.status_code != 200:
-                    raise RuntimeError(f"API Error {res.status_code}: {res.text}")
-                data = res.json()
-                if isinstance(data, dict) and "results" in data:
-                    return data["results"]
-                elif isinstance(data, list):
-                    return data
-                return [data]
-            except requests.exceptions.ConnectTimeout as e:
-                self.logger.error("[QwenEngine] Docker ASR 服务连接超时(5s): %s", e)
-                raise RuntimeError("Docker ASR 服务连接超时") from e
-            except requests.exceptions.ReadTimeout as e:
-                self.logger.error("[QwenEngine] Docker ASR 服务响应超时(90s): %s", e)
-                raise RuntimeError("Docker ASR 服务响应超时") from e
-            except requests.exceptions.ConnectionError as e:
-                self.logger.error("[QwenEngine] Docker ASR 服务无法连接: %s", e)
-                raise RuntimeError("Docker ASR 服务无法连接") from e
+            results = []
+            micro_batch_size = 64  # 与服务端对齐
+            for start_idx in range(0, len(b64_list), micro_batch_size):
+                batch_b64 = b64_list[start_idx : start_idx + micro_batch_size]
+                batch_payload = {
+                    "language": api_lang,
+                    "return_timestamps": True,
+                    "audio_batch_base64": batch_b64,
+                }
+                try:
+                    res = requests.post(
+                        f"{self.host}/v1/audio/batch_transcriptions",
+                        json=batch_payload,
+                        timeout=(5.0, 600.0),  # 300s→600s 与 FunClip 对齐
+                    )
+                    if res.status_code != 200:
+                        self.logger.warning("[QwenEngine] 批次 %d/%d HTTP %d: %s",
+                            start_idx // micro_batch_size + 1,
+                            (len(b64_list) + micro_batch_size - 1) // micro_batch_size,
+                            res.status_code, res.text)
+                        results.extend([{"text": "", "timestamps": [], "language": api_lang}] * len(batch_b64))
+                        continue
+                    data = res.json()
+                    if isinstance(data, dict) and "results" in data:
+                        batch_results = data["results"]
+                    elif isinstance(data, list):
+                        batch_results = data
+                    else:
+                        batch_results = [data]
+                    results.extend(batch_results)
+                except requests.exceptions.ReadTimeout as e:
+                    self.logger.warning("[QwenEngine] 批次 %d/%d 超时，跳过该批: %s",
+                        start_idx // micro_batch_size + 1,
+                        (len(b64_list) + micro_batch_size - 1) // micro_batch_size, e)
+                    results.extend([{"text": "", "timestamps": [], "language": api_lang}] * len(batch_b64))
+                except Exception as e:
+                    self.logger.warning("[QwenEngine] 批次 %d/%d 失败，跳过该批: %s",
+                        start_idx // micro_batch_size + 1,
+                        (len(b64_list) + micro_batch_size - 1) // micro_batch_size, e)
+                    results.extend([{"text": "", "timestamps": [], "language": api_lang}] * len(batch_b64))
+
+            return results
 
         import base64
         import requests
@@ -686,7 +708,7 @@ class QwenEngine:
             res = requests.post(
                 f"{self.host}/v1/audio/batch_transcriptions",
                 json=payload,
-                timeout=(5.0, 90.0),
+                timeout=(5.0, 600.0),  # 与 NumPy 分支对齐 600s
             )
             if res.status_code != 200:
                 raise RuntimeError(f"API Error {res.status_code}: {res.text}")
@@ -747,34 +769,285 @@ class QwenEngine:
         }
 
     def _build_srt(self, timestamps: list, full_text: str) -> str:
-        """根据时间戳列表生成 SRT 字幕内容。"""
+        """根据时间戳列表生成 SRT 字幕内容（使用智能分句）。"""
         from funclip_pro.utils import _ms_to_srt
 
         if not timestamps:
             # 无时间戳时输出整段
             return f"1\n00:00:00,000 --> 00:00:10,000\n{full_text}\n"
 
-        # 尝试将时间戳与文本分段映射
+        # 使用智能分句将词级 timestamps 聚合成句级 segments
+        segments = _split_timestamps_to_segments(timestamps, full_text)
+        if not segments:
+            return f"1\n00:00:00,000 --> 00:00:10,000\n{full_text}\n"
+
         lines = []
-        idx = 1
-        # 时间戳预期格式: [{"start": 0.0, "end": 2.5, "text": "..."}, ...]
-        for ts in timestamps:
-            start_sec = ts.get("start", 0)
-            end_sec = ts.get("end", start_sec + 2)
-            seg_text = ts.get("text", "")
+        for idx, seg in enumerate(segments, start=1):
+            start_ms = seg["start"]
+            end_ms = seg["end"]
+            seg_text = seg["text"]
             if not seg_text.strip():
                 continue
             lines.append(
                 f"{idx}\n"
-                f"{_ms_to_srt(int(start_sec * 1000))} --> {_ms_to_srt(int(end_sec * 1000))}\n"
+                f"{_ms_to_srt(start_ms)} --> {_ms_to_srt(end_ms)}\n"
                 f"{seg_text}\n"
             )
-            idx += 1
 
         if not lines:
             return f"1\n00:00:00,000 --> 00:00:10,000\n{full_text}\n"
 
         return "\n".join(lines)
+
+
+def _split_timestamps_to_segments(timestamps: list, full_text: str, offset_ms: int = 0) -> list:
+    """将 Qwen 词级时间戳聚合成句级 segments（两阶段智能分句）。
+
+    Args:
+        timestamps: Qwen 格式 [{"text": str, "start": float(sec), "end": float(sec)}, ...]
+        full_text: 完整句子文本（含标点），用于从原文切片保留标点
+        offset_ms: 该段在整个音频中的偏移毫秒数（VAD 分片时使用）
+
+    Returns:
+        [{"start": ms, "end": ms, "text": str, "_char_ts": list}, ...]
+    """
+    HARD_PUNC = set('。？！!?；;')
+
+    if not timestamps or not full_text:
+        return []
+
+    # ---- char_ts 映射：将每个 token 映射到 full_text 中的字符偏移 ----
+    # Qwen ForcedAligner 不返回标点，所以匹配时先剥掉标点
+    import re as _re
+    _punc_re = _re.compile(r'[，。！？；：、…—·「」『』“”‘’（）《》〈〉【】\[\]\(\)\{\}\"\'\.\,\!\?\:\s]')
+    clean_text = _punc_re.sub('', full_text)
+    # 建立 clean_text → full_text 的字符位置映射表
+    char_map = []  # char_map[i] = (clean_pos, full_pos)
+    ci = 0
+    for fi, ch in enumerate(full_text):
+        if not _punc_re.match(ch):
+            char_map.append((ci, fi))
+            ci += 1
+
+    char_ts = []
+    search_pos = 0
+    for ts in timestamps:
+        token_text = ts.get("text", "")
+        if not token_text:
+            continue
+        # 在 clean_text 中匹配（token 本身不含标点）
+        pos = clean_text.find(token_text, search_pos)
+        if pos < 0:
+            # fallback: 在 full_text 中直接搜索
+            pos = full_text.find(token_text, search_pos)
+            if pos < 0:
+                pos = search_pos
+            search_pos = pos + len(token_text)
+            char_start = pos
+            char_end = search_pos
+        else:
+            # 从 char_map 反查 full_text 中的位置
+            mapped_starts = [c[1] for c in char_map if c[0] == pos]
+            mapped_ends = [c[1] for c in char_map if c[0] == pos + len(token_text) - 1]
+            char_start = mapped_starts[0] if mapped_starts else pos
+            last_clean_pos = pos + len(token_text) - 1
+            mapped_end_last = [c[1] for c in char_map if c[0] == last_clean_pos]
+            if mapped_end_last:
+                char_end = mapped_end_last[0] + 1
+            else:
+                char_end = char_start + len(token_text)
+            search_pos = pos + len(token_text)
+        char_ts.append({
+            "start": ts.get("start", 0.0),
+            "end": ts.get("end", 0.0),
+            "text": token_text,
+            "char_start": char_start,
+            "char_end": char_end,
+        })
+
+    if not char_ts:
+        return []
+
+    # ---- 阶段1：原子短语 — 遇任何标点或停顿 > 0.8s 则切 ----
+    atomic_phrases = []
+    cur_tokens = [char_ts[0]]
+    for j in range(1, len(char_ts)):
+        item = char_ts[j]
+        gap = item["start"] - cur_tokens[-1]["end"]
+        # 1) 检查 token 自身末字符是否为标点（Qwen 可能把标点作为独立 token）
+        last_text = cur_tokens[-1]["text"]
+        has_punc_token = bool(last_text and last_text[-1] in ".?!。？！，,、")
+        # 2) Qwen ForcedAligner 常不返回标点时间戳，标点仅在 full_text 的 token 间隙中
+        prev_end = cur_tokens[-1]["char_end"]
+        curr_start = item["char_start"]
+        between_text = full_text[prev_end:curr_start]
+        has_punc_between = any(c in between_text for c in ".?!。？！，,、")
+        has_punc = has_punc_token or has_punc_between
+        if has_punc:
+            # 如果是标点触发的切分，把 between_text（标点字符）注入到 cur_tokens 中
+            # 作为合成 token，供 ASS 卡拉 OK 渲染显示标点
+            if has_punc_between and between_text:
+                cur_tokens[-1]["char_end"] += len(between_text)
+                # 注入合成标点 token
+                cur_tokens.append({
+                    "start": cur_tokens[-1]["end"],
+                    "end": item["start"],
+                    "text": between_text,
+                    "char_start": prev_end,
+                    "char_end": prev_end + len(between_text),
+                })
+            # 硬标点判断：既检查 token 末字符，也检查间隙中的硬标点
+            has_hard = any(
+                t["text"] and t["text"][-1] in HARD_PUNC
+                for t in cur_tokens if t["text"]
+            ) or any(c in between_text for c in HARD_PUNC)
+            atomic_phrases.append({
+                "char_start": cur_tokens[0]["char_start"],
+                "char_end": cur_tokens[-1]["char_end"],
+                "tokens": cur_tokens,
+                "has_hard_punc": has_hard,
+                "split_by_gap": False,
+                "split_by_punc": True,
+            })
+            cur_tokens = [item]
+        else:
+            cur_tokens.append(item)
+    if cur_tokens:
+        # 最后一段：延伸到 full_text 末尾，包含尾标点
+        last_end = cur_tokens[-1]["char_end"]
+        if last_end < len(full_text):
+            trailing = full_text[last_end:]
+            # 只包含纯标点和空格，不收后续语音字符
+            pure_punc = ""
+            for ch in trailing:
+                if ch in ".?!。？！，,、！？…—·" or ch.isspace():
+                    pure_punc += ch
+                else:
+                    break
+            cur_tokens[-1]["char_end"] += len(pure_punc)
+        atomic_phrases.append({
+            "char_start": cur_tokens[0]["char_start"],
+            "char_end": cur_tokens[-1]["char_end"],
+            "tokens": cur_tokens,
+            "has_hard_punc": any(
+                t["text"] and t["text"][-1] in HARD_PUNC
+                for t in cur_tokens if t["text"]
+            ),
+            "split_by_gap": False,
+            "split_by_punc": False,
+        })
+
+    # ---- 阶段2：智能凑句 — 硬标点结算 / gap分隔 / 标点分隔 / 满5s提前结 ----
+    segments = []
+    buf = []
+    for p in atomic_phrases:
+        tmp_start = buf[0]["tokens"][0]["start"] if buf else p["tokens"][0]["start"]
+        tmp_end = p["tokens"][-1]["end"]
+        dur_ms = (tmp_end - tmp_start) * 1000
+
+        should_flush = False
+        if buf and buf[-1].get("split_by_gap"):
+            should_flush = True
+        elif p["has_hard_punc"]:
+            should_flush = True
+        elif dur_ms >= 5000:
+            should_flush = True
+
+        # 先 flush buf
+        if should_flush and buf:
+            merged_text = full_text[buf[0]["char_start"]:buf[-1]["char_end"]].strip()
+            merged_ts = []
+            for b in buf:
+                merged_ts.extend(b["tokens"])
+            if merged_text:
+                segments.append({
+                    "start": int(buf[0]["tokens"][0]["start"] * 1000) + offset_ms,
+                    "end": int(buf[-1]["tokens"][-1]["end"] * 1000) + offset_ms,
+                    "text": merged_text,
+                    "_char_ts": merged_ts,
+                })
+            buf = []
+
+        # 处理当前 p
+        if p.get("split_by_gap"):
+            # gap 切分的短语单独输出
+            p_text = full_text[p["char_start"]:p["char_end"]].strip()
+            p_ts = p["tokens"]
+            if p_text:
+                segments.append({
+                    "start": int(p_ts[0]["start"] * 1000) + offset_ms,
+                    "end": int(p_ts[-1]["end"] * 1000) + offset_ms,
+                    "text": p_text,
+                    "_char_ts": p_ts,
+                })
+        elif p["has_hard_punc"]:
+            # 硬标点 → 入 buf 整体输出
+            buf.append(p)
+            merged_text = full_text[buf[0]["char_start"]:buf[-1]["char_end"]].strip()
+            merged_ts = []
+            for b in buf:
+                merged_ts.extend(b["tokens"])
+            if merged_text:
+                segments.append({
+                    "start": int(buf[0]["tokens"][0]["start"] * 1000) + offset_ms,
+                    "end": int(buf[-1]["tokens"][-1]["end"] * 1000) + offset_ms,
+                    "text": merged_text,
+                    "_char_ts": merged_ts,
+                })
+            buf = []
+        elif dur_ms >= 5000:
+            # 5s 超时且是单条（buf 已空）→ 按 token 数切半
+            p_tokens = p["tokens"]
+            if len(p_tokens) >= 4:
+                half = len(p_tokens) // 2
+                t1 = p_tokens[:half]
+                t2 = p_tokens[half:]
+                if t1 and t2:
+                    t1_text = full_text[t1[0]["char_start"]:t1[-1]["char_end"]].strip()
+                    t2_text = full_text[t2[0]["char_start"]:t2[-1]["char_end"]].strip()
+                    if t1_text:
+                        segments.append({
+                            "start": int(t1[0]["start"] * 1000) + offset_ms,
+                            "end": int(t1[-1]["end"] * 1000) + offset_ms,
+                            "text": t1_text,
+                            "_char_ts": t1,
+                        })
+                    if t2_text:
+                        segments.append({
+                            "start": int(t2[0]["start"] * 1000) + offset_ms,
+                            "end": int(t2[-1]["end"] * 1000) + offset_ms,
+                            "text": t2_text,
+                            "_char_ts": t2,
+                        })
+            else:
+                # 不满 4 token 的短段直接输出
+                p_text = full_text[p["char_start"]:p["char_end"]].strip()
+                if p_text:
+                    segments.append({
+                        "start": int(p["tokens"][0]["start"] * 1000) + offset_ms,
+                        "end": int(p["tokens"][-1]["end"] * 1000) + offset_ms,
+                        "text": p_text,
+                        "_char_ts": p["tokens"],
+                    })
+        else:
+            # 普通短语：入 buf 等待后续合并
+            buf.append(p)
+
+    # buffer 残留
+    if buf:
+        merged_text = full_text[buf[0]["char_start"]:buf[-1]["char_end"]].strip()
+        merged_ts = []
+        for b in buf:
+            merged_ts.extend(b["tokens"])
+        if merged_text:
+            segments.append({
+                "start": int(buf[0]["tokens"][0]["start"] * 1000) + offset_ms,
+                "end": int(buf[-1]["tokens"][-1]["end"] * 1000) + offset_ms,
+                "text": merged_text,
+                "_char_ts": merged_ts,
+            })
+
+    return segments
 
 
 def parse_qwen_timestamps(raw: dict) -> list:

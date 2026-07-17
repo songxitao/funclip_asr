@@ -12,6 +12,7 @@ from .asr import (
     SherpaSenseVoice,
     QwenEngine,
     parse_qwen_timestamps,
+    _split_timestamps_to_segments,
     load_models,
 )
 from .tokenization import CharTokenizer
