@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.3] - 2026-07-17
+## [0.8.4] - 2026-07-18
+
+### Fixed
+- **P0 修复：Qwen 非VAD路径 SRT 全是单字碎片** — 非VAD路径直接用 `parse_qwen_timestamps()` 做字级映射，每个字单独一条 SRT（如"对"80ms、"一"160ms）。改为调用 `_split_timestamps_to_segments()` 聚合成句级 segments
+- **P0 修复：标点全部丢失** — Qwen ForcedAligner 不返回标点时间戳，`_char_ts` 不含标点，SRT/ASS 全部无标点。改为从 `full_text` token 间隙检测标点字符，作为合成 token 注入 `_char_ts`
+- **软标点过度切碎** — 逗号等软标点触发切分导致字幕过碎。对齐 FunClip 行为：软标点仅 Phase 1 检测，Phase 2 合并回去，只有硬标点（。？！!?；;）和 5s 超时才切
+- **尾标点丢失** — 最后一段 `char_end` 不包含句末标点。收尾阶段扫描 `full_text` 末尾纯标点并追加
+- **ASS 双层字幕** — `_segments_to_ass()` 每段输出 Default + Karaoke 两行导致重叠。去掉 Default 层，只保留 Karaoke
+- **FunASR/SeACo 输出空 SRT** — `diarize=False` 时 `segments=[]`，`_segments_to_srt([])` 输出空文件。加 fallback 从 VAD chunks + ASR 文本构建无标注 segments
+- **重复标点** — Qwen VAD 分支未 `_clean()` 就调用 `_post_punc()`，导致标点模型在已有标点的文本上又加一层。去掉 `_post_punc()`，直接用 Qwen ITN 标点
+- **变量作用域 Bug** — `seg_meta`/`chunks` 只在 VAD 分支定义，`diarize=False` + 非VAD 路径访问未定义变量。提前初始化到两个分支
+
+### Added
+- `_split_timestamps_to_segments()` 两阶段智能切句函数（原子短语→智能凑句），供 `_build_srt()` 和 `OfflinePipeline.run` 复用
+- Phase 1 原子短语：检测 token 末字符标点 + `full_text` token 间隙标点
+- Phase 2 智能凑句：硬标点结算 / 5s 超时切半 / 软标点合并
+- ASS 注入标点：在 Phase 1 将 between_text 标点作为合成 token 注入 `_char_ts`
+- 单元测试 `test_split_timestamps.py`（10个 UT）：覆盖标点切分、gap 切分、5s 超时、空输入、offset、`_char_ts` 保留
+- 完全重写 `test_qwen_vad_batch.py`（12个 UT + 3个 mock VAD 测试 + 3个集成测试）：覆盖三路径
+
+### Performance
+- 22 个单元测试全部通过，6 秒内完成
 
 ### Added
 - 新增 3 个 WSL2 内存与性能诊断优先级 Ticket（`04-wsl2-memory-lock` P0、`05-cpu-hotspot-baseline` P1、`06-vllm-scheduler-overhead` P2）
