@@ -4,11 +4,13 @@
 `from funclip_pro.core import X` 形式绝对导入。
 """
 
+from .models import WordTimestamp, Segment, TranscriptionResult
 from .segmentation import SegmentationEngine
 from .speaker import CampPlusSpeaker, segment_sliding_window
 from .asr import (
     SenseVoiceSmall,
     PyTorchSenseVoice,
+    SeACoParaformer,
     SherpaSenseVoice,
     QwenEngine,
     parse_qwen_timestamps,
@@ -34,11 +36,15 @@ from .streaming_asr import (
 )
 
 __all__ = [
+    "WordTimestamp",
+    "Segment",
+    "TranscriptionResult",
     "SegmentationEngine",
     "CampPlusSpeaker",
     "segment_sliding_window",
     "SenseVoiceSmall",
     "PyTorchSenseVoice",
+    "SeACoParaformer",
     "SherpaSenseVoice",
     "QwenEngine",
     "parse_qwen_timestamps",
