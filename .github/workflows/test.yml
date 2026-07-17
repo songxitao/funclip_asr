@@ -19,5 +19,7 @@ jobs:
           pip install -r requirements.lock
       - name: Ruff check
         run: ruff check src/
-      - name: Unit tests
-        run: pytest tests/unit/ -v --tb=short --ignore=tests/unit/test_audio_stream.py
+      - name: Mock pipeline tests (no system deps needed)
+        run: pytest tests/integration/test_pipeline_mock.py -v --tb=short
+      - name: Data model unit tests (no system deps needed)
+        run: pytest tests/unit/test_models.py -v --tb=short
