@@ -7,30 +7,51 @@
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
-
-# 在导入 funclip_pro 之前 mock torch 及相关依赖，避免 CI 无 torch 环境报错
 import types as _types
 
+# ============================================================
+# 提前 mock 所有重型/系统依赖，避免 CI 环境逐个报错
+# ============================================================
+
+# --- torch（魔改 ModuleType，让 scipy issubclass 检查能过）---
 class _MockTensor:
-    """让 scipy 的 issubclass(cls, torch.Tensor) 能通过检查的 mock Tensor"""
     def __init__(self, data=None):
         self.data = data
 
-_torch_module = _types.ModuleType("torch")
-_torch_module.__version__ = "0.0.0"
-_torch_module.Tensor = _MockTensor
-_torch_module.cuda = MagicMock()
-_torch_module.cuda.is_available.return_value = False
-_torch_module.cuda.device_count.return_value = 0
-_torch_module.float32 = float
-_torch_module.float64 = float
-_torch_module.int32 = int
-_torch_module.int64 = int
-sys.modules["torch"] = _torch_module
+_t = _types.ModuleType("torch")
+_t.__version__ = "0.0.0"
+_t.Tensor = _MockTensor
+_t.cuda = MagicMock()
+_t.cuda.is_available.return_value = False
+_t.cuda.device_count.return_value = 0
+_t.float32 = float
+_t.float64 = float
+_t.int32 = int
+_t.int64 = int
+sys.modules["torch"] = _t
+
+# --- torchaudio ---
 sys.modules["torchaudio"] = MagicMock()
+
+# --- soundfile ---
 sys.modules["soundfile"] = MagicMock()
-sys.modules["pyannote"] = MagicMock()
-sys.modules["pyannote.audio"] = MagicMock()
+
+# --- pyannote.audio（需要嵌套模块结构 from pyannote.audio import Model）---
+_pyannote = _types.ModuleType("pyannote")
+_pyannote.__path__ = []
+_pyannote.__file__ = ""
+_pyannote.audio = _types.ModuleType("pyannote.audio")
+_pyannote.audio.Model = MagicMock
+sys.modules["pyannote"] = _pyannote
+sys.modules["pyannote.audio"] = _pyannote.audio
+
+# --- pyaudio ---
+sys.modules["pyaudio"] = MagicMock()
+
+# --- pyaudiowpatch（仅 Windows，CI 无此包）---
+sys.modules["pyaudiowpatch"] = MagicMock()
+
+# ============================================================
 
 # 确保能找到 funclip_pro 源码
 _src = str(Path(__file__).resolve().parents[2] / "src")
