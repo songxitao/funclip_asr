@@ -53,10 +53,13 @@ sys.modules["pyaudiowpatch"] = MagicMock()
 
 # ============================================================
 
-# 确保能找到 funclip_pro 源码
+# 确保能找到 funclip_pro 源码和 tests 模块
 _src = str(Path(__file__).resolve().parents[2] / "src")
+_root = str(Path(__file__).resolve().parents[2])
 if _src not in sys.path:
     sys.path.insert(0, _src)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
 import numpy as np
 import pytest
