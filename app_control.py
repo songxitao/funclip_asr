@@ -206,7 +206,7 @@ def parse_text_paths(text_input):
             raw_paths.append(clean_line)
     return raw_paths
 
-def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, rec_save_dir, whisper_size, funasr_mode, lang, whisper_backend, spk_on, batch_size, folder_mode, hotwords_str):
+def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, rec_save_dir, funasr_mode, lang, spk_on, folder_mode, hotwords_str):
     # 0. 检查环境
     if OFFLINE_PYTHON != "python" and not os.path.exists(OFFLINE_PYTHON):
         yield f"❌ 错误：找不到离线 Python: {OFFLINE_PYTHON}", "启动失败", None
@@ -292,11 +292,6 @@ def run_offline_asr(uploaded_files, mic_audio, path_input, engine, output_dir, r
             os.makedirs(final_out_dir)
             
         yield f"📂 [文件夹模式] 开启！字幕将统一归档至: {final_out_dir}", "准备中", None
-    
-    # 2. 第二阶段：检查并调用进程内 OfflinePipeline 或处理尚未包化重构的引擎分支
-    if engine == "Whisper":
-        yield "❌ 错误：Whisper 引擎暂未被包化重构为 OfflinePipeline 进程内调用，且 asr1.py 已被清理。请选择 FunASR 引擎下的 SenseVoice 模式。", "不支持", None
-        return
 
     # 热词提示（SeACo 模式支持；SenseVoice/Nano 暂不支持）
     if hotwords_str and hotwords_str.strip() and funasr_mode != "SeACo":
@@ -714,17 +709,10 @@ with gr.Blocks(title="SuperASR Final Fixed", theme=gr.themes.Soft()) as app:
                     out_path = gr.Textbox(label="输出目录 (Output Dir)", value=default_out)
                     chk_folder_mode = gr.Checkbox(label="📂 文件夹归档模式", value=False, info="扁平输出：不创建子文件夹")
                     with gr.Row():
-                        # 🔥 新增 Qwen3 (Docker) 选项
-                        engine = gr.Radio(["FunASR", "Whisper", "Qwen3 (Docker)"], label="引擎", value="FunASR")
+                        engine = gr.Radio(["FunASR", "Qwen3 (Docker)"], label="引擎", value="FunASR")
                         funasr_mode = gr.Radio(["SeACo", "SenseVoice", "Nano"], label="FunASR模式", value="SeACo")
-                    
-                    # --- Whisper 面板 ---
-                    whisper_grp = gr.Group(visible=False)
-                    with whisper_grp:
-                        w_backend = gr.Radio(["Faster", "Official"], label="Whisper后端", value="Faster")
-                        w_size = gr.Dropdown(["turbo", "large-v3"], label="尺寸", value="turbo")
-                        
-                    # --- Qwen3 面板 (新增) ---
+
+                    # --- Qwen3 面板 ---
                     qwen_grp = gr.Group(visible=False)
                     with qwen_grp:
                         gr.Markdown("#### 🐳 Qwen3 后端控制")
@@ -735,9 +723,7 @@ with gr.Blocks(title="SuperASR Final Fixed", theme=gr.themes.Soft()) as app:
 
                     lang = gr.Dropdown(["自动 (Auto)", "中文", "英文", "日文"], label="语言", value="自动 (Auto)")
                     spk = gr.Checkbox(label="说话人区分 (SPK)", value=False)
-                    batch_size = gr.Slider(minimum=4, maximum=48, value=24, step=4, label="批处理量 (Batch Size)", info="4080 推荐 24-32，显存不足可降低")
-                    # 🔥 新增：热词输入框
-                    hotwords = gr.Textbox(label="🔥 热词 (Hotwords)", placeholder="例如: FunASR,语音识别,GPT", info="用逗号分隔，提升专业术语识别准确率 (仅Nano模式生效)")
+                    hotwords = gr.Textbox(label="🔥 热词 (Hotwords)", placeholder="例如: FunASR,语音识别,GPT", info="用逗号分隔，提升专业术语识别准确率 (SeACo 模式生效)")
                     btn_run = gr.Button("🚀 开始转写", variant="primary")
                 with gr.Column():
                     log_out = gr.Textbox(label="日志", lines=10)
@@ -746,22 +732,18 @@ with gr.Blocks(title="SuperASR Final Fixed", theme=gr.themes.Soft()) as app:
             
             # 🔥 动态显隐逻辑
             def on_engine_change(x):
-                # 返回 [whisper_visible, qwen_visible, funasr_mode_interactive]
-                # FunASR 模式下，右边的 funasr_mode 应该生效；其他模式下其实可以禁用，但为了简单暂不禁用
                 return [
-                    gr.update(visible=(x == "Whisper")), 
                     gr.update(visible=(x == "Qwen3 (Docker)"))
                 ]
 
-            engine.change(on_engine_change, engine, [whisper_grp, qwen_grp])
-            
+            engine.change(on_engine_change, engine, [qwen_grp])
+
             # 🔥 新增：清空录音按钮逻辑
             btn_clear_mic.click(lambda: None, None, mic_audio)
 
-            # btn_run.click(run_offline_asr, [files, path_txt, engine, out_path, w_size, funasr_mode, lang, w_backend, spk], [log_out, status_out, file_out])
             btn_run.click(
                 run_offline_asr, 
-                [files, mic_audio, path_txt, engine, out_path, rec_save_dir, w_size, funasr_mode, lang, w_backend, spk, batch_size, chk_folder_mode, hotwords], 
+                [files, mic_audio, path_txt, engine, out_path, rec_save_dir, funasr_mode, lang, spk, chk_folder_mode, hotwords], 
                 [log_out, status_out, file_out]
             )
             
