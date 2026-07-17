@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-18
+
+### Added
+- **SeACo Paraformer 引擎** — 四合一加载 SeACo+VAD+PUNC+SPK，内置句子级时间戳。`core/asr.py` 新增 `SeACoParaformer` 类
+- **核心数据模型** — `core/models.py` 新增 `WordTimestamp` / `Segment` / `TranscriptionResult` dataclass。字级时间戳有结构化的落脚点，不再靠 dict 约定
+- **Qwen VAD 直出** — Qwen 分支去掉 `_split_timestamps_to_segments` 二次拆分，VAD 段边界直接作为 SRT 时间戳。Qwen 词级 timestamps 落进 `Segment.words`
+- **ASS 卡拉 OK 支持** — `utils/ass.py` 支持 word timestamps → 逐字高亮渲染
+- **标准化 API 端点** — `asr_onnx_service.py` 新增 `POST /v1/transcribe`（Pydantic 请求/响应）、`GET /v1/health`
+- **单元测试** — `tests/unit/test_models.py` 14 个测试用例
+
+### Changed
+- **架构变更**：`pipeline.run()` 返回值从 4-tuple 改为 `TranscriptionResult` dataclass。所有调用方同步适配
+- **引擎路由**：`_select_engine()` 新增 `"seaco"` key。`funasr_mode`（SeACo/SenseVoice/Nano）从死选项变为实际生效
+- **热词支持**：SeACo 模式支持 hotwords 传参（SenseVoice/Nano 暂不支持）
+
+### Fixed
+- **SeACo 说话人标注不受控** — 不勾 SPK 时 SeACo 分支仍返回 `[说话人X]` 标注（内置 spk_model 一直返回 speaker 信息）。修复：`diarize=False` 时剥离 speaker 字段
+
 ## [0.8.4] - 2026-07-18
 
 ### Fixed

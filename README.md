@@ -57,6 +57,78 @@ graph TD
 
 ---
 
+## 🔄 ASR 工作流总览 (ASR Pipeline)
+
+```mermaid
+graph TD
+    subgraph "接入层 (Entry)"
+        Gradio[Gradio UI app_control.py] -->|engine/funasr_mode/语言/热词| Pipeline
+        API[FastAPI /v1/transcribe] --> Pipeline
+        CLI[cli_transcribe.py] --> Pipeline
+    end
+
+    subgraph "编排层 (Pipeline)"
+        Pipeline[OfflinePipeline.run] --> Route{引擎路由}
+        Route -->|seaco| SeACoPath[SeACo 快捷路径]
+        Route -->|qwen| QwenPath[Qwen VAD 分支]
+        Route -->|torch/sherpa| StandardPath[标准流水线]
+    end
+
+    subgraph "引擎层 (Engines)"
+        SeACoPath --> SeACo[SeACoParaformer<br/>四合一 VAD+PUNC+SPK]
+        QwenPath --> VAD[FSMN VAD 切分] --> QwenBatch[Qwen Docker<br/>批量 API]
+        StandardPath --> VAD2[FSMN VAD / 廉价 Trim] --> Decode{SenseVoice<br/>Sherpa ONNX}
+    end
+
+    subgraph "输出层 (Output)"
+        SeACo --> Result1[TranscriptionResult]
+        QwenBatch --> Result2[TranscriptionResult<br/>VAD 边界 = SRT 时间戳<br/>词级 timestamps → Segment.words]
+        Decode --> Result3[TranscriptionResult]
+        Result1 --> SRT[utils/srt.py]
+        Result2 --> SRT
+        Result3 --> SRT
+        Result2 --> ASS[utils/ass.py<br/>卡拉 OK 字级高亮]
+    end
+
+    subgraph "消费方 (Consumers)"
+        SRT --> SRTFile[.srt 字幕文件]
+        ASS --> ASSFile[.ass 字幕文件]
+        API --> Dify[Dify Tool Provider]
+        API --> OpenAPI[OpenAPI /docs]
+    end
+```
+
+### 引擎对比
+
+| 引擎 | 后端 | 设备 | 标点 | 说话人 | 时间戳 | 场景 |
+|------|------|------|------|--------|--------|------|
+| **Qwen3 ASR** | Docker HTTP | GPU | ✓ 内置 ITN | ✓ Docker 端 | ✓ 字级 (ForcedAligner) | 最强精度，适合生产 |
+| **SeACo Paraformer** | funasr AutoModel | GPU | ✓ 内置 PUNC | ✓ 内置 SPK | ✓ 句子级 | 离线高精度中文 ASR |
+| **SenseVoice** | funasr / OpenVINO / sherpa | CPU/GPU | 后置 PUNC | — | — | 通用降级方案 |
+| **Whisper** | — | — | — | — | — | ❌ 已弃用 |
+
+### API
+
+```
+POST /v1/transcribe
+  file: UploadFile
+  engine: "auto" | "seaco" | "qwen" | "sensevoice"
+  language: "auto" | "zh" | "en" | ...
+  diarize: bool
+  hotwords: str
+  → TranscriptionResult JSON
+
+GET /v1/health
+  → {"status": "ok", "engines": {"qwen": "ready", "seaco": "lazy", ...}}
+
+GET /docs
+  → Swagger UI (OpenAPI)
+```
+
+旧 `/transcribe` 端点保留向后兼容。
+
+---
+
 ## 📊 双轨评测与基准表现 (Evaluation & Benchmark)
 
 我们在 `AliMeeting` 测试集上对单场 `R8002_M8002`（含多路重叠、交替发言的近场录音，总时长 2062 秒）进行了量化评测，数据对比如下：
