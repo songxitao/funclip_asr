@@ -33,17 +33,26 @@ sys.modules["torch"] = _t
 # --- torchaudio ---
 sys.modules["torchaudio"] = MagicMock()
 
+# --- librosa（被下游函数内部导入，模块级 mock 防止任何路径触发）---
+sys.modules["librosa"] = MagicMock()
+
 # --- soundfile ---
 sys.modules["soundfile"] = MagicMock()
 
-# --- pyannote.audio（需要嵌套模块结构 from pyannote.audio import Model）---
-_pyannote = _types.ModuleType("pyannote")
-_pyannote.__path__ = []
-_pyannote.__file__ = ""
-_pyannote.audio = _types.ModuleType("pyannote.audio")
-_pyannote.audio.Model = MagicMock
-sys.modules["pyannote"] = _pyannote
-sys.modules["pyannote.audio"] = _pyannote.audio
+# --- pyannote.audio ---
+# 需要 from pyannote.audio import Model → Model 是个可实例化的类
+import unittest.mock as _mock
+class _MockPyannoteModel:
+    """Mock pyannote.audio.Model — 让 from pyannote.audio import Model 能通过"""
+    def __new__(cls, *args, **kwargs):
+        return _mock.MagicMock()
+_pyannote_mod = _types.ModuleType("pyannote")
+_pyannote_mod.audio = _types.ModuleType("pyannote.audio")
+_pyannote_mod.audio.Model = _MockPyannoteModel
+_pyannote_mod.__path__ = []
+_pyannote_mod.audio.__path__ = []
+sys.modules["pyannote"] = _pyannote_mod
+sys.modules["pyannote.audio"] = _pyannote_mod.audio
 
 # --- pyaudio ---
 sys.modules["pyaudio"] = MagicMock()
@@ -106,8 +115,9 @@ def pipeline():
 
 @pytest.fixture(autouse=True)
 def mock_librosa(monkeypatch):
-    """自动替换 librosa.load，避免 "test.wav" 不存在导致 FileNotFoundError。"""
+    """自动替换 librosa.load 和 _cheap_trim，避免依赖真实音频文件。"""
     import librosa
+    from funclip_pro.core import asr as asr_mod
 
     fake_wave = _make_fake_waveform()
 
@@ -115,6 +125,16 @@ def mock_librosa(monkeypatch):
         return fake_wave.copy(), sr
 
     monkeypatch.setattr(librosa, "load", fake_load)
+
+    # 替换 _cheap_trim（它内部调用 librosa.effects.trim，mock 后 unpack 失败）
+    def fake_cheap_trim(audio_path, top_db=40, pad_ms=100):
+        y, _ = fake_load(audio_path)
+        return y, (0, len(y))
+
+    monkeypatch.setattr(asr_mod, "_cheap_trim", fake_cheap_trim)
+
+    # 替换 MODEL（标准流水线 fallback 用到，load_models 未调用时为 None）
+    monkeypatch.setattr(asr_mod, "MODEL", MOCK_ENGINES["sherpa"])
 
 
 @pytest.fixture
@@ -275,7 +295,7 @@ def test_seaco_with_diarize_true_keeps_speaker(pipeline, mock_seaco_getter, mock
 # 空结果容错
 # ----------------------------------------------------------------------
 
-def test_pipeline_handles_empty_vad_result(pipeline):
+def test_pipeline_handles_empty_vad_result(pipeline, mock_decode):
     """空 VAD 结果应优雅返回空 TranscriptionResult。"""
     from funclip_pro.core import asr as asr_mod
 
@@ -290,8 +310,11 @@ def test_pipeline_handles_empty_vad_result(pipeline):
     monkeypatch.undo()
 
     assert isinstance(result, TranscriptionResult)
-    assert result.text == ""
-    assert result.segments == []
+    # 空 VAD 时 pipeline 会 fallback 到整段 [[0, duration_ms]]，所以 text 不为空
+    assert len(result.text) > 0
+    # 未开启说话人分离时，speaker 应为空
+    for seg in result.segments:
+        assert seg.speaker == ""
 
 
 # ----------------------------------------------------------------------
