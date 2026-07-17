@@ -6,6 +6,18 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
+
+# 在导入 funclip_pro 之前 mock torch 及相关依赖，避免 CI 无 torch 环境报错
+_torch_mock = MagicMock()
+_torch_mock.cuda.is_available.return_value = False
+_torch_mock.cuda.device_count.return_value = 0
+_torch_mock.__version__ = "0.0.0"
+sys.modules["torch"] = _torch_mock
+sys.modules["torchaudio"] = MagicMock()
+sys.modules["soundfile"] = MagicMock()
+sys.modules["pyannote"] = MagicMock()
+sys.modules["pyannote.audio"] = MagicMock()
 
 # 确保能找到 funclip_pro 源码
 _src = str(Path(__file__).resolve().parents[2] / "src")
