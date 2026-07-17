@@ -9,11 +9,24 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 # 在导入 funclip_pro 之前 mock torch 及相关依赖，避免 CI 无 torch 环境报错
-_torch_mock = MagicMock()
-_torch_mock.cuda.is_available.return_value = False
-_torch_mock.cuda.device_count.return_value = 0
-_torch_mock.__version__ = "0.0.0"
-sys.modules["torch"] = _torch_mock
+import types as _types
+
+class _MockTensor:
+    """让 scipy 的 issubclass(cls, torch.Tensor) 能通过检查的 mock Tensor"""
+    def __init__(self, data=None):
+        self.data = data
+
+_torch_module = _types.ModuleType("torch")
+_torch_module.__version__ = "0.0.0"
+_torch_module.Tensor = _MockTensor
+_torch_module.cuda = MagicMock()
+_torch_module.cuda.is_available.return_value = False
+_torch_module.cuda.device_count.return_value = 0
+_torch_module.float32 = float
+_torch_module.float64 = float
+_torch_module.int32 = int
+_torch_module.int64 = int
+sys.modules["torch"] = _torch_module
 sys.modules["torchaudio"] = MagicMock()
 sys.modules["soundfile"] = MagicMock()
 sys.modules["pyannote"] = MagicMock()
