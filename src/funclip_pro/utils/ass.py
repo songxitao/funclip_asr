@@ -1,9 +1,16 @@
 """ASS 字幕生成工具。
 
-提供两个生成函数：
-- _segments_to_ass(segments)        ：VAD 级 ASS（无卡拉OK，与 SRT 行划分一致）
-- _timestamps_to_ass_karaoke(ts_list, offset_ms)：字级卡拉OK ASS（逐字高亮 \\kf 标签）
+提供三个生成函数：
+- _segments_to_ass(segments)              ：VAD 级 ASS（有 words 时生成卡拉OK逐字高亮，
+                                              无 words 时与 SRT 行划分一致）
+- _timestamps_to_ass_karaoke(ts_list, offset_ms)：字级卡拉OK ASS 逐字高亮 \\kf 标签
+
+支持 Segment dataclass 和 dict 两种输入格式。
 """
+
+from __future__ import annotations
+
+from typing import Any
 
 
 def _format_ass_time(ms):
@@ -13,9 +20,42 @@ def _format_ass_time(ms):
     total_s = total_cs // 100
     s = total_s % 60
     total_m = total_s // 60
-    m = total_m % 60
     h = total_m // 60
     return f"{h}:{m:02}:{s:02}.{cs:02}"
+
+
+def _get_seg_field(seg: Any, key: str, default=None):
+    """从 dict 或 dataclass 中安全获取字段。"""
+    if isinstance(seg, dict):
+        return seg.get(key, default)
+    return getattr(seg, key, default)
+
+
+def _get_words(seg: Any):
+    """从 segment 中提取 word 级时间戳列表。
+
+    返回 [{"start": float(sec), "end": float(sec), "text": str}, ...]
+    支持 WordTimestamp dataclass 和 dict 两种格式。
+    """
+    words = _get_seg_field(seg, "words", [])
+    if not words:
+        # 兼容旧的 _char_ts 字段
+        words = _get_seg_field(seg, "_char_ts", [])
+    if not words:
+        return []
+
+    result = []
+    for w in words:
+        if isinstance(w, dict):
+            result.append(w)
+        else:
+            # WordTimestamp dataclass
+            result.append({
+                "start": w.start_ms / 1000.0,
+                "end": w.end_ms / 1000.0,
+                "text": w.text,
+            })
+    return result
 
 
 ASS_HEADER = """[Script Info]
@@ -37,31 +77,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _segments_to_ass(segments):
-    """将 segments 转换为 ASS 字幕，仅输出卡拉 OK 逐字高亮层。
+    """将 segments 转换为 ASS 字幕。
 
-    对每个 segment，输出一条 Karaoke Dialogue（含 \\kf 字级高亮标签）。
-    通过将标点字符注入 _char_ts 的 token 间隙中，使卡拉 OK 文本包含标点。
+    对每个 segment：
+    - 如果有 word 级时间戳（words 字段），生成卡拉 OK 逐字高亮（Karaoke 样式）
+    - 如果没有 word 级时间戳，生成普通字幕行（Default 样式）
+
+    支持 Segment dataclass 和 dict 两种输入。
 
     Args:
-        segments: List[{"start": ms, "end": ms, "text": str, "_char_ts"?: List}]
+        segments: List[Union[Segment, dict]]
+                  每个元素须包含 start_ms/start, end_ms/end, text 字段；
+                  可选 words（WordTimestamp 列表）或 _char_ts 字段。
 
     Returns:
         str: 完整 ASS 文件内容
     """
     events = []
     for seg in segments:
-        start_ms = int(seg["start"])
-        end_ms = int(seg["end"])
-        text = seg.get("text", "").strip()
+        if isinstance(seg, dict):
+            start_ms = int(seg["start"])
+            end_ms = int(seg["end"])
+            text = seg.get("text", "").strip()
+        else:
+            start_ms = seg.start_ms
+            end_ms = seg.end_ms
+            text = seg.text.strip()
+
         if not text:
             continue
         start_str = _format_ass_time(start_ms)
         end_str = _format_ass_time(end_ms)
 
-        # Karaoke 事件（字级高亮），仅当有字级时间戳时
-        char_ts = seg.get("_char_ts")
-        if char_ts and len(char_ts) > 1:
-            smoothed = _smooth_timestamps(char_ts)
+        # 尝试获取 word 级时间戳
+        words = _get_words(seg)
+        if words and len(words) > 1:
+            smoothed = _smooth_timestamps(words)
             karaoke_text = ""
             prev_end_sec = smoothed[0]["start"]
             for token in smoothed:

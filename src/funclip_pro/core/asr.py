@@ -65,6 +65,10 @@ PUNC_MODEL = None
 _TORCH_LOCK = threading.Lock()
 TORCH_MODEL = None
 
+# SeACo Paraformer 引擎惰性加载（锁内构建，四合一模型较重，用则加载）
+_SEACO_LOCK = threading.Lock()
+SEACO_MODEL = None
+
 _LABEL_RE = re.compile(r"<\|.*?\|>")
 
 
@@ -260,6 +264,151 @@ class PyTorchSenseVoice:
 
 
 # ---------------------------------------------------------------------------
+# SeACoParaformer（funasr SeACo Paraformer 引擎）
+#
+# 四合一加载 SeACo + VAD + PUNC + SPK，内置句子级时间戳。
+# 直接继承自老版 FunClip 的 precision 模式（已验证的生产级中文 ASR）。
+# 不依赖外部 VAD / PUNC / 说话人分离流水线。
+# ---------------------------------------------------------------------------
+class SeACoParaformer:
+    """SeACo Paraformer 四合一引擎。
+
+    构造时加载 SeACo + VAD + PUNC + SPK 四个模型。
+    __call__ 接收文件路径或 numpy 波形，返回 {text, segments}。
+    """
+
+    def __init__(self, device: str = "cuda"):
+        _apply_dll_patch_once()
+        seaco_path = str(resolve_model_path(
+            "models/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+        ))
+        vad_path = str(resolve_model_path(
+            "models/damo/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+        ))
+        punc_path = str(resolve_model_path(
+            "models/damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+        ))
+        spk_path = str(resolve_model_path(
+            "models/damo/speech_campplus_sv_zh-cn_16k-common"
+        ))
+
+        # funasr 重型依赖延迟导入
+        from funasr import AutoModel  # noqa: F401
+
+        self.model = AutoModel(
+            model=seaco_path, vad_model=vad_path, punc_model=punc_path,
+            spk_model=spk_path, device=device, disable_update=True,
+        )
+        self.device = device
+
+    def __call__(
+        self,
+        audio_input,
+        hotwords: str = "",
+        language: str = "auto",
+    ) -> dict:
+        """执行 SeACo 推理。
+
+        Args:
+            audio_input: 文件路径(str) 或 numpy 波形。
+            hotwords: 热词（逗号分隔）。
+            language: 语言代码（SeACo 实际仅响应 "auto"/"zh"）。
+
+        Returns:
+            {"text": str, "segments": [{"start": ms, "end": ms, "text": str, "speaker": str}, ...]}
+        """
+        generate_kwargs = {
+            "input": audio_input,
+            "batch_size_s": 300,
+            "return_spk_res": True,
+            "sentence_timestamp": True,
+        }
+        if hotwords:
+            generate_kwargs["hotword"] = hotwords
+
+        try:
+            res = self.model.generate(**generate_kwargs)
+        except Exception as e:
+            logger.warning(f"SeACo 推理异常（尝试关掉 spk_res）: {e}")
+            generate_kwargs["return_spk_res"] = False
+            res = self.model.generate(**generate_kwargs)
+
+        result_item = res[0]
+        text = result_item.get("text", "")
+
+        segments: list = []
+
+        # 方案 A: 从 sentence_info 提取（SeACo precision 模式的主要输出）
+        sentence_info = result_item.get("sentence_info")
+        if sentence_info:
+            for sent in sentence_info:
+                ts_list = sent.get("timestamp", [])
+                if ts_list:
+                    start_ms = ts_list[0][0]
+                    end_ms = ts_list[-1][1]
+                else:
+                    start_ms = 0
+                    end_ms = 0
+                seg_text = sent.get("text", "").strip()
+                spk = sent.get("spk", "")
+                if seg_text:
+                    segments.append({
+                        "start": start_ms,
+                        "end": end_ms,
+                        "speaker": str(spk) if spk else "",
+                        "text": seg_text,
+                    })
+
+        # 方案 B: fallback 到字符级 timestamp 拼句子
+        if not segments:
+            raw_ts = result_item.get("timestamp")
+            if raw_ts:
+                current_sentence = ""
+                current_start = 0.0
+                sent_idx = 0
+                for item in raw_ts:
+                    if len(item) == 3:
+                        char, s, e = item
+                    elif len(item) == 2:
+                        s, e = item
+                        char = text[sent_idx] if sent_idx < len(text) else ""
+                        sent_idx += 1
+                    else:
+                        continue
+                    s = float(s)
+                    e = float(e)
+                    if not current_sentence:
+                        current_start = s
+                    current_sentence += str(char)
+                    if str(char) in "。？！，\n" or len(current_sentence) > 25:
+                        segments.append({
+                            "start": int(current_start),
+                            "end": int(e),
+                            "speaker": "",
+                            "text": current_sentence.strip(),
+                        })
+                        current_sentence = ""
+                if current_sentence:
+                    segments.append({
+                        "start": int(current_start),
+                        "end": int(e),
+                        "speaker": "",
+                        "text": current_sentence.strip(),
+                    })
+
+        # 方案 C: 最终兜底 — 整段作为一句
+        if not segments and text.strip():
+            segments.append({
+                "start": 0,
+                "end": 0,
+                "speaker": "",
+                "text": text.strip(),
+            })
+
+        return {"text": text, "segments": segments}
+
+
+# ---------------------------------------------------------------------------
 # SherpaSenseVoice（sherpa-onnx INT8 CPU 引擎）
 # ---------------------------------------------------------------------------
 class SherpaSenseVoice:
@@ -402,10 +551,21 @@ def _get_torch_model():
         return TORCH_MODEL
 
 
+def _get_seaco_model():
+    """在锁内惰性构建 SeACo Paraformer 引擎；首次调用才加载四合一模型权重。"""
+    global SEACO_MODEL
+    with _SEACO_LOCK:
+        if SEACO_MODEL is None:
+            SEACO_MODEL = SeACoParaformer(device="cuda")
+        return SEACO_MODEL
+
+
 def _select_engine(engine_override, duration_ms):
-    """引擎路由：cpu->sherpa；gpu->torch；qwen/qwen3->qwen；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
+    """引擎路由：cpu->sherpa；gpu->torch；seaco->seaco；qwen->qwen；auto->CUDA 可用且长音频走 torch，否则 sherpa。"""
     if engine_override and str(engine_override).lower() in ("qwen", "qwen3", "qwen3 (docker)"):
         return "qwen"
+    if engine_override and str(engine_override).lower() == "seaco":
+        return "seaco"
     if engine_override == "cpu":
         return "sherpa"
     if engine_override == "gpu":
@@ -458,8 +618,13 @@ def _post_punc(raw_text: str) -> str:
     return raw_text
 
 
-def _decode(engine_key, waveforms):
-    """按引擎解码；torch 分支失败自动回退 Sherpa，保证端点始终返回文本。"""
+def _decode(engine_key, waveforms, hotwords=""):
+    """按引擎解码；torch 分支失败自动回退 Sherpa，保证端点始终返回文本。
+
+    注意：seaco 分支返回 dict{"text": str, "segments": [...]}，其余分支返回 list[str]。
+    """
+    if engine_key == "seaco":
+        return _get_seaco_model()(waveforms, hotwords=hotwords)
     if engine_key == "torch":
         try:
             return _get_torch_model()(waveforms)
