@@ -80,6 +80,7 @@ def test_select_engine_auto_short_always_sherpa():
     assert _select_engine("auto", SHORT_AUDIO_MS) == "sherpa"
 
 
+@pytest.mark.slow
 def test_select_engine_auto_long_depends_on_cuda():
     """auto 策略下，长音频(>SHORT_AUDIO_MS)在 CUDA 可用时走 torch，否则 sherpa。"""
     import torch
