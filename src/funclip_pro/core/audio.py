@@ -8,13 +8,28 @@ import time
 
 import numpy as np
 
-# 条件导入 PyAudio（参考 app_live_local.py 80-85 行）
-try:
-    import pyaudiowpatch as pyaudio
-    HAS_LOOPBACK = True
-except ImportError:
-    import pyaudio
-    HAS_LOOPBACK = False
+# ── PyAudio 惰性加载 ──────────────────────────────────────────────
+# PyAudio 是系统级音频库，CI 等无音频硬件的环境安装困难。
+# 只有真正调用流式采集时才加载，纯函数（process_audio_frame）不受影响。
+
+_pyaudio_mod = None
+_has_loopback_mod = None
+
+
+def _get_pyaudio():
+    """返回 (pyaudio_module, has_loopback_bool)。"""
+    global _pyaudio_mod, _has_loopback_mod
+    if _pyaudio_mod is not None:
+        return _pyaudio_mod, _has_loopback_mod
+    try:
+        import pyaudiowpatch as pa
+        _pyaudio_mod = pa
+        _has_loopback_mod = True
+    except ImportError:
+        import pyaudio as pa
+        _pyaudio_mod = pa
+        _has_loopback_mod = False
+    return _pyaudio_mod, _has_loopback_mod
 
 VOLUME_BOOST = 3.0  # 默认增益
 
@@ -68,15 +83,16 @@ class BaseStream:
         self.src_channels = 1
         self.src_rate = 16000
 
-    def _get_pyaudio(self):
+    def _get_pyaudio_instance(self):
         """延迟获取 PyAudio 实例（允许无硬件时测试）。"""
+        pa, _hs = _get_pyaudio()
         if not hasattr(self, "_pyaudio_instance"):
-            self._pyaudio_instance = pyaudio.PyAudio()
+            self._pyaudio_instance = pa.PyAudio()
         return self._pyaudio_instance
 
     def callback(self, in_data, frame_count, time_info, status):
         self.q.put(in_data)
-        return (None, pyaudio.paContinue)
+        return (None, _get_pyaudio()[0].paContinue)
 
     def read(self):
         raw = self.q.get()
@@ -104,14 +120,15 @@ class LoopbackStream(BaseStream):
     """WASAPI 环回采集（电脑声卡输出）。"""
 
     def start(self):
-        if not HAS_LOOPBACK:
+        _hs = _get_pyaudio()[1]
+        if not _hs:
             raise Exception("No pyaudiowpatch library")
-        p = self._get_pyaudio()
+        p = self._get_pyaudio_instance()
         target = None
         wasapi_index = next(
             i
             for i in range(p.get_host_api_count())
-            if p.get_host_api_info_by_index(i)["type"] == pyaudio.paWASAPI
+            if p.get_host_api_info_by_index(i)["type"] == _get_pyaudio()[0].paWASAPI
         )
         wasapi_info = p.get_host_api_info_by_index(wasapi_index)
         default_out = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
@@ -129,7 +146,7 @@ class LoopbackStream(BaseStream):
         self.src_channels = target["maxInputChannels"]
         chunk_src = int(self.src_rate * (self.target_chunk_size / 16000))
         self.stream = p.open(
-            format=pyaudio.paInt16,
+            format=_get_pyaudio()[0].paInt16,
             channels=self.src_channels,
             rate=self.src_rate,
             input=True,
@@ -154,7 +171,7 @@ class MicStream(BaseStream):
     """麦克风采集。"""
 
     def start(self):
-        p = self._get_pyaudio()
+        p = self._get_pyaudio_instance()
         target = None
         try:
             target = p.get_default_input_device_info()
@@ -172,7 +189,7 @@ class MicStream(BaseStream):
         self.src_channels = target["maxInputChannels"]
         chunk_src = int(self.src_rate * (self.target_chunk_size / 16000))
         self.stream = p.open(
-            format=pyaudio.paInt16,
+            format=_get_pyaudio()[0].paInt16,
             channels=self.src_channels,
             rate=self.src_rate,
             input=True,
