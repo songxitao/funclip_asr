@@ -567,8 +567,14 @@ def _select_engine(engine_override, duration_ms):
         return "sherpa"
     if engine_override == "gpu":
         return "torch"
+    # auto 路径：
+    #   - duration 未知或短音频 → sherpa（不导入 torch）
+    #   - 长音频 + CUDA 可用 → torch
+    #   - 长音频 + 无 CUDA → sherpa
+    if duration_ms is None or duration_ms <= SHORT_AUDIO_MS:
+        return "sherpa"
     import torch  # noqa: F401
-    if torch.cuda.is_available() and (duration_ms is not None and duration_ms > SHORT_AUDIO_MS):
+    if torch.cuda.is_available():
         return "torch"
     return "sherpa"
 
