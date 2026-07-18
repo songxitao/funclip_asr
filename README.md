@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/PyTorch-2.3.1%2Bcu121-green.svg" alt="PyTorch 2.3.1"/>
   <img src="https://img.shields.io/badge/CUDA-12.1-orange.svg" alt="CUDA 12.1"/>
   <img src="https://img.shields.io/badge/License-Apache%202.0-red.svg" alt="License"/>
-  <img src="https://img.shields.io/badge/tests-30%20passed-brightgreen.svg" alt="Tests"/>
+  <img src="https://github.com/songxitao/funclip_asr/actions/workflows/test.yml/badge.svg" alt="CI"/>
   <img src="https://img.shields.io/badge/CLI-funclip--pro-blue.svg" alt="CLI"/>
 </p>
 
