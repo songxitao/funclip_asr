@@ -37,6 +37,7 @@ def _make_silence_sine_silence_wav(path, sr=16000):
     return y
 
 
+@pytest.mark.slow
 def test_cheap_trim_does_not_load_models():
     """_cheap_trim 仅用 librosa.effects.trim，不加载任何模型，且返回值符合预期。
 
