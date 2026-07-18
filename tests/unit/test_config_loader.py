@@ -1,9 +1,7 @@
 """config loader 单测（P0 试点，不依赖真实模型 / GPU）。"""
-import os
 import pathlib
 import sys
 
-import pytest
 
 # 把项目根的 src 加入路径以导入 funclip_pro
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -13,7 +11,7 @@ import funclip_pro.config.loader as L  # noqa: E402
 
 
 def test_project_root_resolves():
-    expected = pathlib.Path("E:/project/funclip-pro").resolve()
+    expected = pathlib.Path(__file__).resolve().parents[2]
     assert L.PROJECT_ROOT.resolve() == expected
 
 
