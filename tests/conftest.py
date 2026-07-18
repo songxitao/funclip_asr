@@ -51,27 +51,39 @@ except ImportError:
 
 # ── 2. collect_ignore（针对桩无法处理的文件） ──────────────────────────
 
+# 注意：不能用 `import torch` / `import fastapi` 做条件判断，
+# 因为上面注册的桩让它们总能导入成功。
+# 需要检查具体导致崩溃的子模块或真实行为。
+
 collect_ignore: list[str] = []
 
-# torch / funasr — 这些文件在导入后即使有桩也会因为
-# 调用真实功能（如加载模型）而崩溃
+# pyannote.audio — 我们的 pyannote 桩是空 ModuleType，不支持子包导入
+# segmentation.py → from pyannote.audio import Model 会炸
 try:
-    import torch  # noqa: F401
+    import pyannote.audio  # noqa: F401
 except ImportError:
     collect_ignore.extend([
-        # 通过 pipeline.offline → SegmentationEngine → 真实 torch 链崩溃
         "unit/test_offline_pipeline_unit.py",
         "unit/test_qwen_vad_batch.py",
-        # 直接模块级 import torch / funasr + 需要真实功能
-        "integration/test_onnx_decode_refactor.py",
-        "integration/test_onnx_gpu.py",
         "integration/test_segmentation_engine.py",
     ])
 
-# fastapi — 重型 Web 框架，桩不够用
+# funasr + torch — 真实调用 not supported by stubs
 try:
-    import fastapi  # noqa: F401
-except ImportError:
+    import torch
+    import funasr
+    _ = torch.tensor([1])
+    _ = funasr.AutoModel
+except (ImportError, AttributeError):
+    collect_ignore.extend([
+        "integration/test_onnx_decode_refactor.py",
+        "integration/test_onnx_gpu.py",
+    ])
+
+# fastapi — stubs 不支持 fastapi.testclient
+try:
+    import fastapi.testclient  # noqa: F401
+except (ImportError, AttributeError):
     collect_ignore.extend([
         "integration/test_asr_api.py",
         "integration/test_pytorch_route.py",
