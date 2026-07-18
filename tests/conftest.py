@@ -61,6 +61,7 @@ for mod_name in _STUB_MODULES:
         if mod_name == "funasr":
             stub.AutoModel = type("AutoModel", (), {})
         if mod_name == "torch":
+            stub.Tensor = type("Tensor", (), {})  # issubclass 需要真实 type
             stub.cuda.is_available = lambda: False
             stub.set_num_threads = lambda x: None
         sys.modules[mod_name] = stub
