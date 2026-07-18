@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "funclip-pro"
-version = "0.8.0"
+version = "0.9.0"
 description = "边缘设备极致对齐的 ASR & 说话人分离系统"
 authors = [{name = "FunClip Pro Contributors"}]
 license = "Apache-2.0"
@@ -49,9 +49,9 @@ ignore = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/"
-Repository = "https://github.com/"
-Documentation = "https://github.com/"
+Homepage = "https://github.com/songxitao/funclip_asr"
+Repository = "https://github.com/songxitao/funclip_asr"
+Documentation = "https://github.com/songxitao/funclip_asr#readme"
 
 [project.scripts]
 funclip-pro = "funclip_pro.cli:main"

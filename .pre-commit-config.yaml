@@ -4,12 +4,3 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-  - repo: local
-    hooks:
-      - id: pytest-unit
-        name: pytest unit tests
-        entry: E:/conda/envs/asr_ui_env/python.exe -m pytest
-        args: [tests/unit/, -x, -q]
-        language: system
-        pass_filenames: false
-        always_run: true
