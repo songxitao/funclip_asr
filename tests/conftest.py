@@ -85,12 +85,14 @@ except ImportError:
     ])
 
 # funasr + torch — 真实调用 not supported by stubs
+# 注意：桩的 torch.tensor 是 _LazyStubModule（不可调用），
+# `torch.tensor([1])` 抛 TypeError，也要捕获
 try:
     import torch
     import funasr
     _ = torch.tensor([1])
     _ = funasr.AutoModel
-except (ImportError, AttributeError):
+except (ImportError, AttributeError, TypeError):
     collect_ignore.extend([
         "integration/test_onnx_decode_refactor.py",
         "integration/test_onnx_gpu.py",
