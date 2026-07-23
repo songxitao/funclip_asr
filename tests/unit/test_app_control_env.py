@@ -46,7 +46,7 @@ def test_load_config_reads_offline_python_and_conda_root():
 
 def test_app_control_no_hardcoded_windows_paths():
     """源码不得再包含 Windows 盘符 raw 字面量硬编码（正则断言）。"""
-    src = Path("app_control.py").read_text(encoding="utf-8")
+    src = Path("scripts/web/app_control.py").read_text(encoding="utf-8")
 
     # 通用：不得再出现形如 r"X:\ 的 raw 盘符字面量
     raw_drive = re.compile(r'r"[A-Za-z]:\\')

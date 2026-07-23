@@ -27,7 +27,7 @@ def _generate_sine_wav(path, duration_sec=1.0, freq=440, sr=16000):
 def run_service():
     # 启动后台 ASR-ONNX 服务
     process = subprocess.Popen(
-        [sys.executable, "asr_onnx_service.py"],
+        [sys.executable, "scripts/web/asr_onnx_service.py"],
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
     )
     # 给予充足的模型加载初始化时间 (15秒)
