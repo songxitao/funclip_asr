@@ -2,6 +2,13 @@
 
 通过 pytest monkeypatch 替换 asr_mod._decode / VAD_MODEL / librosa.load / QwenEngine
 / _get_seaco_model 等，在不加载任何真实模型的情况下验证 pipeline 各分支逻辑。
+
+设计原则：
+  - 一次性 mock 全部重型依赖（见下方 sys.modules 区域），拒绝打地鼠：
+    如果 CI 报 ModuleNotFoundError，不要只加一个 mock。
+    先扫全量模块级导入链（grep -rn "^import" src/），一次全 mock。
+  - 轻量依赖放 requirements.lock（numpy, scikit-learn, pytest, ruff）
+  - 重型依赖放 mock（torch, pyannote, pyaudio, librosa 等）
 """
 
 import sys

@@ -50,3 +50,26 @@ nul
 build/
 dist/
 *.egg-info/
+
+# Private handoff archive
+.handoffs/
+
+# ML weights & models（兜底保护）
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.h5
+*.pkl
+
+# Credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Data files
+*.csv
+*.parquet
+*.arrow
