@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 import logging
 import shutil
-import tempfile
 import traceback
 import json
 
@@ -27,8 +26,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [WebUI] - %(message)s')
 
 # ================= ⚙️ 核心配置区 (动态路径) =================
-# 1. 自动获取当前脚本所在的根目录 (e.g. E:\FunClip)
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# 1. 自动获取项目根目录（从 scripts/web/ 上移两层到项目根）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 2. 项目逻辑目录
 PROJECT_PATH = PROJECT_ROOT
@@ -81,8 +80,8 @@ if "offline_python" not in config_data:
 
 # 6. 脚本路径自动定位
 # OFFLINE_SCRIPT = os.path.join(PROJECT_PATH, "funclip", "asr1.py")  # 已废止，由 OfflinePipeline 进程内调用替代
-LIVE_SCRIPT = os.path.join(PROJECT_PATH, "app_live_local.py")
-QWEN_LIVE_SCRIPT = os.path.join(PROJECT_ROOT, "app_live_ws.py")
+LIVE_SCRIPT = os.path.join(PROJECT_PATH, "scripts", "live", "app_live_local.py")
+QWEN_LIVE_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "live", "app_live_ws.py")
 # =========================================================
 
 live_proc = None
@@ -557,7 +556,7 @@ def run_live_asr(model_name, lang_label, device_mode_label, overlay_on, force_co
     
     if "Qwen3" in model_name:
         # Qwen3 专用逻辑
-        target_script = os.path.basename(QWEN_LIVE_SCRIPT)
+        target_script = os.path.relpath(QWEN_LIVE_SCRIPT, PROJECT_PATH)
         lang_code = {"中文": "zh", "英文": "en", "自动": "auto"}.get(lang_label, "auto")
         mode_arg = "loopback" if "Loopback" in device_mode_label else "mic"
         cmd_str = f'python "%~dp0{target_script}" --mode {mode_arg} --lang {lang_code}'
@@ -566,7 +565,7 @@ def run_live_asr(model_name, lang_label, device_mode_label, overlay_on, force_co
         title_str = "Qwen3 Real-time Subtitles"
     else:
         # 原有 FunASR 逻辑
-        target_script = os.path.basename(LIVE_SCRIPT)
+        target_script = os.path.relpath(LIVE_SCRIPT, PROJECT_PATH)
         model_dir = os.path.join(model_root, "FunAudioLLM", "Fun-ASR-Nano-2512") if "Nano" in model_name else os.path.join(model_root, "iic", "SenseVoiceSmall")
         lang_code = {"中文": "zh", "英文": "en", "自动": "auto"}.get(lang_label, "auto")
         

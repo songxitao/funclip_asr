@@ -4,8 +4,6 @@ import queue
 import time
 import numpy as np
 import threading
-import importlib.util
-import torch
 import argparse
 import tkinter as tk
 from tkinter import font as tkfont
@@ -37,7 +35,7 @@ VOLUME_BOOST = 3.0         # 声音增益
 VAD_MODE = "silero"
 
 # Silero VAD 模型路径
-VAD_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model", "models", "silero_vad.onnx")
+VAD_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model", "models", "silero_vad.onnx")
 # =======================================================
 
 # 1. 控制台选择：保留文本选择能力，避免禁用快速编辑模式
@@ -66,7 +64,6 @@ except Exception as e:
 # 不再直接 import funasr 的 AutoModel
 # 全量替换为：
 from funclip_pro.core.audio import (
-    process_audio_frame,
     LoopbackStream,
     MicStream,
     MixedStream,
@@ -74,7 +71,6 @@ from funclip_pro.core.audio import (
 from funclip_pro.core.streaming_asr import (
     FunAsrStreamingEngine,
 )
-from funclip_pro.config.loader import resolve_model_path
 # ===================================================
 
 # ================= 🖥️ 悬浮窗 UI =================
@@ -158,9 +154,6 @@ class SubtitleOverlay:
 def run_engine(model_dir, lang, device_mode, gui_queue):
     """薄壳版 run_engine：只做编排，不做算法。"""
     # 1. 导入 core 包（函数内延迟导入，保持模块级简洁）
-    from funclip_pro.core.streaming_asr import FunAsrStreamingEngine
-    from funclip_pro.core.audio import LoopbackStream, MicStream, MixedStream
-    from funclip_pro.config.loader import resolve_model_path
 
     if gui_queue:
         gui_queue.put("⏳ 正在初始化流式引擎...")
@@ -201,13 +194,8 @@ def run_engine(model_dir, lang, device_mode, gui_queue):
     # 5. 状态变量
     history = []
     CHUNK_DURATION = 0.032
-    pause_limit_count = int(PAUSE_LIMIT_SEC / CHUNK_DURATION)
-    min_len_points = int(16000 * MIN_SENTENCE_SEC)
-    last_preview_time = 0
-    PREVIEW_MIN_INTERVAL = 0.3
-    buffer = []
-    silence_cnt = 0
-    is_speaking = False
+    int(PAUSE_LIMIT_SEC / CHUNK_DURATION)
+    int(16000 * MIN_SENTENCE_SEC)
 
     print("✅ Engine Ready")
 
@@ -257,7 +245,7 @@ def run_engine(model_dir, lang, device_mode, gui_queue):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "model", "models", "iic", "SenseVoiceSmall"))
+    parser.add_argument("--model_dir", default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model", "models", "iic", "SenseVoiceSmall"))
     parser.add_argument("--language", default="auto")
     parser.add_argument("--device_mode", default="loopback")
     parser.add_argument("--overlay", action="store_true")

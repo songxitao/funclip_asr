@@ -1,6 +1,5 @@
 import os
 import sys
-import queue
 import time
 import numpy as np
 import threading
@@ -15,7 +14,6 @@ import wave
 from typing import List
 
 from funclip_pro.core.audio import LoopbackStream, MicStream, MixedStream
-from funclip_pro.core.streaming_asr import SileroVAD
 
 # Force UTF-8 output
 sys.stdout.reconfigure(encoding='utf-8')
@@ -90,7 +88,7 @@ class SubtitleSegmenter:
                 current = ""
         
         tail = current.strip()           # 显示用的尾巴（受逗号切分影响）
-        reset_tail = reset_current.strip()  # 重置判断用的尾巴（仅受强标点影响）
+        reset_current.strip()  # 重置判断用的尾巴（仅受强标点影响）
 
         # 2. 决定当前大字幕和定稿历史
         if tail:

@@ -4,7 +4,6 @@
 真相源 (Single Source of Truth) 已迁移至 funclip_pro.cli。
 本文件仅保留为向后兼容的薄壳入口。
 """
-import sys
 from funclip_pro.cli import main
 
 if __name__ == "__main__":

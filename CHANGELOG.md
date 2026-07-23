@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-23
+
+### Changed
+- **项目结构整理**：根目录 8 个散落脚本归入 `scripts/{web,live,cli,tools,bench}/`，同步修正内部路径引用
+- **`.gitignore` 加固**：追加 ML 权重兜底（`*.safetensors, *.bin, *.onnx, *.pt, *.pth, *.h5, *.pkl`）、凭据文件（`.env, *.pem, *.key`）、数据文件（`*.csv, *.parquet, *.arrow`）三个安全区块
+- **ruff lint 修复**：scripts/ 下 6 个文件的 14 处代码风格问题自动修复
+- **pre-commit 配置**：ruff 检查限于 `src/`，排除工具脚本目录
+
+### Removed
+- **废弃测试清理**：删除 `tests/archive/`（17 个文件，1761 行废弃代码）
+- **HANDOFF 文档迁移**：`HANDOFF.md`、`HANDOFF-REVIEW.md`、`docs/` 下 2 份 REVIEW 文档移入 `.handoffs/` 并加入 `.gitignore`
+
 ## [0.9.0] - 2026-07-18
 
 ### Added

@@ -6,7 +6,6 @@ QwenASR 离线推理性能基准测试
 """
 
 import base64
-import json
 import os
 import subprocess
 import sys
@@ -207,7 +206,7 @@ def test_long_pipeline(filepath):
     print(f"🎬 阶段 4: 端到端长音频 OfflinePipeline 测试 | {filepath.name} | 时长: {duration:.2f}s")
     
     # 将 SDK 的 src 加入 python 路径以使用我们刚优化的 QwenEngine
-    sys.path.insert(0, str(Path(__file__).parent / "src"))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     from funclip_pro.pipeline.offline import OfflinePipeline
     
     snap_before = docker_snapshot()
